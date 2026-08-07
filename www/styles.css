@@ -6,23 +6,23 @@
    ============================================================ */
 
 :root {
-  --paper:      #FBF9F5;
+  --paper:      #F2FBF7;
   --panel:      #FFFFFF;
-  --ink:        #3D2314;
-  --ink-dim:    #5C4A3B;
-  --ink-faint:  #6E5D50;
-  --grid:       #E8DECD;
-  --grid-soft:  #F1E9DA;
+  --ink:        #1D4F3D;
+  --ink-dim:    #3E6B5B;
+  --ink-faint:  #5C8E7B;
+  --grid:       #C9E9DB;
+  --grid-soft:  #E4F5EE;
 
-  --teal:       #1F7A6C;
-  --teal-fill:  #A8DED3;
-  --pink:       #EC7C93;
-  --pink-deep:  #C2185B;
-  --pink-fill:  #FCE4EC;
-  --gold:       #E8A33D;
-  --gold-deep:  #C9A227;
-  --gold-fill:  #FFE9A8;
-  --blue-input: #1A54F2;
+  --teal:       #55B890;
+  --teal-fill:  #D6EEE2;
+  --pink:       #73D1AB;
+  --pink-deep:  #2A6E54;
+  --pink-fill:  #E8F7F0;
+  --gold:       #9CDAC1;
+  --gold-deep:  #1D4F3D;
+  --gold-fill:  #EAF8F1;
+  --blue-input: #55B890;
   --red:        #E0554F;
 
   --display: "Baloo 2", "Trebuchet MS", ui-rounded, sans-serif;
@@ -36,13 +36,13 @@
   color-scheme: light;
 }
 
-/* the six pastel lane colours from the "May the best duck win" sheet */
-.lane--c0, .avatar--c0 { --lane-fill: var(--gold-fill); --lane-ink: var(--gold-deep); }
-.lane--c1, .avatar--c1 { --lane-fill: #F8BBD0; --lane-ink: var(--pink-deep); }
-.lane--c2, .avatar--c2 { --lane-fill: #F5CBA7; --lane-ink: #B5651D; }
-.lane--c3, .avatar--c3 { --lane-fill: #D7EDC0; --lane-ink: #689F38; }
-.lane--c4, .avatar--c4 { --lane-fill: var(--teal-fill); --lane-ink: #00897B; }
-.lane--c5, .avatar--c5 { --lane-fill: #E0D5CF; --lane-ink: #8D6E63; }
+/* the six lane colours, light to dark across the mono-mint family */
+.lane--c0, .avatar--c0 { --lane-fill: #EAF8F1; --lane-ink: #1D4F3D; }
+.lane--c1, .avatar--c1 { --lane-fill: #D6EEE2; --lane-ink: #2A6E54; }
+.lane--c2, .avatar--c2 { --lane-fill: #9CDAC1; --lane-ink: #1D4F3D; }
+.lane--c3, .avatar--c3 { --lane-fill: #73D1AB; --lane-ink: #0F3D2E; }
+.lane--c4, .avatar--c4 { --lane-fill: #55B890; --lane-ink: #FFFFFF; }
+.lane--c5, .avatar--c5 { --lane-fill: #3E9678; --lane-ink: #FFFFFF; }
 
 * { box-sizing: border-box; }
 
@@ -196,38 +196,46 @@ input, select { font-family: inherit; }
   100% { box-shadow: 0 0 0 0 rgba(31, 122, 108, 0); }
 }
 
-/* ---------- tabs (coloured like the sheet's own tab strip) ---------- */
+/* ---------- tabs — two big buttons, not an underlined strip ---------- */
+
+.hero { margin-top: 18px; }
 
 .tabnav {
   display: flex;
-  gap: 0;
+  gap: 10px;
   margin-top: 22px;
-  border-bottom: 2px solid var(--grid);
-  overflow-x: auto;
 }
 
 .tabnav__btn {
-  background: none;
+  flex: 1;
+  background: var(--grid-soft);
+  color: var(--ink-dim);
   border: none;
-  color: var(--ink-faint);
+  border-radius: var(--r-md);
   font-family: var(--display);
   font-weight: 700;
-  font-size: 13px;
+  font-size: 14px;
   letter-spacing: 0.01em;
-  padding: 10px 4px;
-  margin-right: 22px;
-  margin-bottom: -2px;
-  white-space: nowrap;
-  border-bottom: 3px solid transparent;
-  transition: color 0.15s, border-color 0.15s;
+  padding: 14px 10px;
+  transition: background 0.15s, color 0.15s;
 }
-.tabnav__btn:hover { color: var(--ink); }
+.tabnav__btn:hover { background: var(--teal-fill); }
 
-.tabnav__btn--gold.tabnav__btn--on { color: var(--gold-deep); border-bottom-color: var(--gold); }
-.tabnav__btn--pink.tabnav__btn--on { color: var(--pink-deep); border-bottom-color: var(--pink); }
-.tabnav__btn--teal.tabnav__btn--on { color: var(--teal); border-bottom-color: var(--teal); }
+.tabnav__btn--gold.tabnav__btn--on { background: var(--ink); color: #fff; }
+.tabnav__btn--teal.tabnav__btn--on { background: var(--teal); color: #fff; }
 
 .tab-panel { margin-top: 4px; }
+
+/* container-transform: the new tab "grows" from wherever its button was tapped */
+.tab-content {
+  transition: transform 340ms cubic-bezier(0.22, 0.9, 0.28, 1), opacity 260ms ease;
+  transform: scale(1);
+  opacity: 1;
+}
+.tab-content--entering {
+  transform: scale(0.18);
+  opacity: 0;
+}
 
 /* ---------- buttons ---------- */
 
@@ -251,14 +259,14 @@ input, select { font-family: inherit; }
   border-color: var(--teal);
   color: #fff;
 }
-.btn--go:hover { background: #256F63; border-color: #256F63; }
+.btn--go:hover { background: #3E9678; border-color: #3E9678; }
 
 .btn--pink {
   background: var(--pink);
   border-color: var(--pink);
   color: #fff;
 }
-.btn--pink:hover { background: #E15E79; border-color: #E15E79; }
+.btn--pink:hover { background: #4FA383; border-color: #4FA383; }
 
 .btn--ghost { background: transparent; }
 .btn--ghost:hover { background: var(--grid-soft); }
@@ -318,6 +326,7 @@ input, select { font-family: inherit; }
 /* ---------- themed dropdown (replaces native <select> / Android picker) ---------- */
 
 .dropdown { position: relative; flex: 1; min-width: 120px; }
+.dropdown--inline { flex: 0 0 auto; min-width: auto; }
 
 .dropdown__btn {
   width: 100%;
@@ -335,6 +344,19 @@ input, select { font-family: inherit; }
   text-align: left;
 }
 .dropdown__btn:hover { border-color: var(--blue-input); }
+
+.dropdown__btn--compact {
+  width: auto;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--teal);
+  font-weight: 700;
+  font-size: inherit;
+  gap: 3px;
+}
+.dropdown__btn--compact:hover { border-color: transparent; }
+.dropdown__btn--compact .dropdown__chev { color: var(--teal); font-size: 13px; }
 
 .dropdown__val {
   overflow: hidden;
@@ -593,37 +615,56 @@ input, select { font-family: inherit; }
 /* ---------- podium ---------- */
 
 .podium {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 8px;
 }
 
 .place {
-  background: var(--panel);
-  border: 1px solid var(--grid);
-  border-radius: var(--r-md);
-  padding: 14px 12px;
+  flex: 1;
+  min-width: 0;
   text-align: center;
-  position: relative;
-  overflow: hidden;
 }
+
+.place__avatar {
+  width: 42px;
+  height: 42px;
+  margin: 0 auto -17px;
+  border: 3px solid var(--paper);
+  position: relative;
+  z-index: 1;
+}
+
+.place--1 .place__avatar { width: 52px; height: 52px; margin-bottom: -21px; }
+.place--3 .place__avatar { width: 36px; height: 36px; margin-bottom: -14px; }
+
+.place__block {
+  background: var(--ink-dim);
+  border-radius: var(--r-md) var(--r-md) 0 0;
+  height: 58px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 8px;
+}
+
+.place--1 .place__block { height: 92px; background: var(--ink); }
+.place--3 .place__block { height: 42px; background: var(--ink-faint); }
+.place--none .place__block { background: var(--grid-soft); }
 
 .place__no {
   font-family: var(--display);
   font-weight: 700;
-  font-size: clamp(20px, 5.5vw, 26px);
-  line-height: 1;
-  margin-bottom: 8px;
+  font-size: 15px;
+  color: #fff;
 }
-
-.place--1 { background: var(--gold-fill); border-color: var(--gold); }
-.place--1 .place__no { color: var(--gold-deep); }
-.place--2 .place__no { color: #8B98A3; }
-.place--3 .place__no { color: #B5651D; }
+.place--none .place__no { color: var(--ink-faint); }
 
 .place__name {
   font-weight: 700;
-  font-size: 15px;
+  font-size: 12px;
+  margin-top: 8px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -631,9 +672,8 @@ input, select { font-family: inherit; }
 
 .place__pct {
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: 11px;
   color: var(--ink-dim);
-  margin-top: 3px;
 }
 
 .place--none .place__name { color: var(--ink-faint); font-weight: 500; }
@@ -891,29 +931,52 @@ input, select { font-family: inherit; }
 .setting-row__hint { font-size: 12px; color: var(--ink-faint); width: 100%; margin-top: -6px; }
 .setting-row__ctl { margin-left: auto; display: flex; gap: 8px; align-items: center; }
 
-.charlist { display: grid; gap: 8px; margin-top: 6px; }
+.charlist { display: grid; gap: 10px; margin-top: 6px; }
 
-.charrow {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  background: var(--grid-soft);
-  border: 1px solid var(--grid);
+.charcard {
+  padding: 10px;
+  background: var(--ink);
   border-radius: var(--r-md);
 }
+.charcard--editing { background: var(--ink); }
 
-.charrow__imgs { display: flex; gap: 4px; }
-.charrow__imgs img {
-  width: 28px; height: 28px; object-fit: contain;
-  background: #fff;
-  border-radius: 6px;
-  border: 1px solid var(--grid);
+.charcard__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 0 2px;
+}
+.charcard__name { font-size: 13px; font-weight: 700; color: #fff; }
+.charcard__name-input { flex: 1; }
+
+.charcard__remove {
+  width: 24px; height: 24px; flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--grid-soft);
+  color: var(--ink);
+  border: none;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; line-height: 1;
 }
 
-.charform { display: grid; gap: 8px; margin-top: 12px; }
-.charform__pics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.charform__err { font-size: 12px; color: var(--red); margin-top: -4px; font-weight: 600; }
+.charcard__poses { display: flex; gap: 6px; }
+.charcard__pose {
+  flex: 1;
+  background: #fff;
+  border-radius: var(--r-sm);
+  min-height: 54px;
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
+}
+.charcard__pose img { width: 100%; height: 54px; object-fit: contain; }
+.charcard__pose-label { font-size: 11px; color: var(--ink-faint); }
+
+.charcard__editposes { display: grid; gap: 8px; }
+.charcard__editposes .imgpick { background: #fff; border-radius: var(--r-sm); padding: 8px; }
+
+.charform__err { font-size: 12px; color: var(--red); margin: -4px 0 4px; font-weight: 600; }
 
 .field--invalid { border-color: var(--red) !important; }
 .field--invalid:focus { border-color: var(--red); }
@@ -936,17 +999,83 @@ input, select { font-family: inherit; }
 }
 .imgpick__upload { text-align: center; }
 
-/* ---------- home tab: racer identity rows ---------- */
+/* ---------- home tab: race setup + racer cards + race code ---------- */
 
-.idrow {
+.goalcard {
+  background: var(--panel);
+  border: 1px solid var(--grid);
+  border-radius: var(--r-lg);
+  padding: 18px;
+  text-align: center;
+}
+.goalcard__label { font-size: 11px; font-weight: 700; color: var(--ink-faint); letter-spacing: 0.02em; margin: 0 0 6px; }
+.goalcard__row { display: flex; align-items: center; justify-content: center; gap: 6px; }
+.goalcard__amount {
+  border: none;
+  background: none;
+  font-family: var(--mono);
+  font-size: clamp(26px, 8vw, 34px);
+  font-weight: 700;
+  color: var(--ink);
+  width: 160px;
+  text-align: center;
+  padding: 0;
+}
+
+.racerlist { display: grid; gap: 10px; margin-top: 6px; }
+
+.racercard {
+  background: var(--teal-fill);
+  border-radius: var(--r-md);
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.racercard__row { display: flex; gap: 8px; align-items: center; }
+.racercard__name { flex: 1.3; min-width: 100px; }
+
+.racercard__remove {
+  width: 34px; height: 34px; flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--ink);
+  color: #fff;
+  border: none;
+  font-size: 16px;
+  line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+}
+
+.racecard {
+  background: var(--teal-fill);
+  border-radius: var(--r-lg);
+  padding: 16px;
+}
+.racecard__label { font-size: 11px; font-weight: 700; color: var(--ink-faint); letter-spacing: 0.02em; margin: 0 0 8px; }
+.racecard__code {
   display: flex;
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--grid-soft);
+  justify-content: space-between;
+  background: #fff;
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  font-family: var(--mono);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--ink);
 }
-.idrow:last-child { border-bottom: none; }
+.racecard__copy {
+  width: 26px; height: 26px; flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--ink);
+  color: #fff;
+  border: none;
+  font-size: 13px;
+  display: flex; align-items: center; justify-content: center;
+}
+.racecard__row { display: flex; gap: 8px; margin-bottom: 8px; }
+.racecard__btn { flex: 1; background: #fff; }
 
 /* ---------- savings plan calculator ---------- */
 

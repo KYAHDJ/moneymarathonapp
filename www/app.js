@@ -124,13 +124,19 @@ const DEFAULT_CHARACTERS = [
 
 const PROFILE_COLORS = [
   { id: "", label: "Auto-pick color" },
-  { id: "c0", label: "Gold" },
-  { id: "c1", label: "Pink" },
-  { id: "c2", label: "Peach" },
-  { id: "c3", label: "Green" },
-  { id: "c4", label: "Teal" },
-  { id: "c5", label: "Taupe" },
+  { id: "c0", label: "Seafoam" },
+  { id: "c1", label: "Mint" },
+  { id: "c2", label: "Sage" },
+  { id: "c3", label: "Jade" },
+  { id: "c4", label: "Pine" },
+  { id: "c5", label: "Moss" },
 ];
+
+/* hex equivalents of the c0-c5 lane presets (must match styles.css), so a
+   preset pick can also fill the color box solid like a custom hex does */
+const LANE_PRESET_FILLS = {
+  c0: "#EAF8F1", c1: "#D6EEE2", c2: "#9CDAC1", c3: "#73D1AB", c4: "#55B890", c5: "#3E9678",
+};
 
 const CURRENCIES = [
   { id: "₱", label: "₱ · Philippine Peso" },
@@ -320,7 +326,7 @@ function askConfirm(message, opts = {}) {
 
 /* ---------- themed dropdown (avoids the native Android/browser <select> chrome) ---------- */
 
-function Dropdown({ value, options, onChange, ariaLabel, className, placeholder }) {
+function Dropdown({ value, options, onChange, ariaLabel, className, placeholder, compact, fillColor }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
@@ -335,9 +341,11 @@ function Dropdown({ value, options, onChange, ariaLabel, className, placeholder 
 
   return html`
     <div class=${"dropdown " + (className || "")} ref=${ref}>
-      <button type="button" class="dropdown__btn" aria-label=${ariaLabel} onClick=${() => setOpen(!open)}>
-        <span class="dropdown__val">${current ? current.label : (placeholder || "Select…")}</span>
-        <span class="dropdown__chev">▾</span>
+      <button type="button" class=${"dropdown__btn" + (compact ? " dropdown__btn--compact" : "")}
+        style=${fillColor ? `background:${fillColor};border-color:${fillColor};color:${contrastOn(fillColor)}` : ""}
+        aria-label=${ariaLabel} onClick=${() => setOpen(!open)}>
+        <span class="dropdown__val">${compact ? (current ? current.value : "") : (current ? current.label : (placeholder || "Select…"))}</span>
+        <span class="dropdown__chev" style=${fillColor ? `color:${contrastOn(fillColor)}` : ""}>▾</span>
       </button>
       ${open && html`
         <div class="dropdown__menu" role="listbox">
@@ -546,8 +554,11 @@ function App() {
   const [authed, setAuthed] = useState(false);
   const [toast, setToast] = useState(null);
   const [fatal, setFatal] = useState(null);
-  const [tab, setTab] = useState("track");
+  const [tab, setTab] = useState("dashboard");
   const [detailRacerId, setDetailRacerId] = useState(null);
+  const [tabOrigin, setTabOrigin] = useState("50% 0%");
+  const [tabEntering, setTabEntering] = useState(false);
+  const tabContentRef = useRef(null);
   const [showSplash, setShowSplash] = useState(true);
   const [splashOut, setSplashOut] = useState(false);
   const [tutorial, setTutorial] = useState(() => ({
@@ -563,7 +574,29 @@ function App() {
     setTimeout(() => setToast(null), 2800);
   };
 
-  const changeTab = (id) => { setDetailRacerId(null); setTab(id); };
+  /* switching tabs "grows" the new content from wherever the tab button was
+     tapped (a container-transform), instead of just cutting to it */
+  const changeTab = (id, e) => {
+    setDetailRacerId(null);
+    if (e?.currentTarget && tabContentRef.current) {
+      const b = e.currentTarget.getBoundingClientRect();
+      const c = tabContentRef.current.getBoundingClientRect();
+      const ox = ((b.left + b.width / 2 - c.left) / c.width) * 100;
+      const oy = ((b.top + b.height / 2 - c.top) / c.height) * 100;
+      setTabOrigin(`${ox}% ${oy}%`);
+      setTabEntering(true);
+    }
+    setTab(id);
+  };
+
+  /* a short setTimeout instead of requestAnimationFrame — rAF doesn't
+     reliably fire in non-composited/backgrounded contexts (same issue hit
+     with the music fade), a timeout does regardless of paint state */
+  useEffect(() => {
+    if (!tabEntering) return;
+    const t = setTimeout(() => setTabEntering(false), 20);
+    return () => clearTimeout(t);
+  }, [tabEntering]);
 
   /* swipe left/right between Home / Race Tracker / Racer Profiles — not while
      drilled into a racer's own page, where a horizontal drag means something else */
@@ -597,7 +630,7 @@ function App() {
        platforms (not a Promise) — Promise.resolve() normalizes both cases */
     Promise.resolve(CapApp.addListener("backButton", async () => {
       if (detailRef.current) { setDetailRacerId(null); return; }
-      if (tabRef.current !== "track") { changeTab("track"); return; }
+      if (tabRef.current !== "dashboard") { changeTab("dashboard"); return; }
       if (await askConfirm("Quit Money Marathon?", { okLabel: "Quit", danger: false })) CapApp.exitApp();
     })).then((h) => { handle = h; });
     return () => { handle?.remove(); };
@@ -914,6 +947,8 @@ function App() {
 
   return html`
     <div class="shell">
+      <div style="height:env(safe-area-inset-top, 0px)"></div>
+
       <header class="masthead">
         <div style="flex:1;min-width:240px">
           <p class="wordmark">MONEY <span>MARATHON</span></p>
@@ -931,30 +966,22 @@ function App() {
           <span class=${"sync " + (status === "live" ? "" : "sync--off")}>
             <i class="sync__dot"></i>${status === "live" ? "Live" : "Offline"}
           </span>
-          <button class="btn btn--sm" onClick=${() => {
-            navigator.clipboard.writeText(raceId)
-              .then(() => say("Race code copied"))
-              .catch(() => say(`Code: ${raceId}`));
-          }}>Code: ${raceId} · Copy</button>
         </div>
       </header>
 
+      <${RaceHero} race=${race} rows=${rows} cur=${cur} />
+
       <${TabNav} tab=${tab} onChange=${changeTab} />
 
-      <div onPointerDown=${onSwipeDown} onPointerUp=${onSwipeUp}>
-        ${tab === "track" && html`<${TrackTab}
-          race=${race} rows=${rows} cur=${cur} goal=${goal} pooled=${pooled} joined=${joined} leader=${leader} />`}
-
-        ${tab === "home" && html`<${HomeTab}
+      <div ref=${tabContentRef} class=${"tab-content" + (tabEntering ? " tab-content--entering" : "")}
+        style=${`transform-origin:${tabOrigin}`}
+        onPointerDown=${onSwipeDown} onPointerUp=${onSwipeUp}>
+        ${tab === "dashboard" && html`<${HomeTab}
           race=${race} cur=${cur} rows=${rows}
-          raceCode=${raceId}
           onPatchRace=${patchRace}
           onPatchRacer=${patchRacer}
           onAddRacer=${addRacer}
           onRemoveRacer=${removeRacer}
-          onLeave=${leaveRace}
-          onReplayTutorial=${replayTutorial}
-          onOpenSound=${() => setShowSound(true)}
           say=${say} />`}
 
         ${tab === "racewin" && (
@@ -970,7 +997,12 @@ function App() {
                     onClearLog=${() => clearLog(activeRow)} />`
                 : html`<div class="tab-panel"><div class="empty">This racer was removed.</div>
                     <button class="btn" onClick=${() => setDetailRacerId(null)}>← Back</button></div>`)
-            : html`<${RaceWinTab} race=${race} cur=${cur} rows=${rows} onOpenRacer=${setDetailRacerId} />`
+            : html`<${RaceWinTab} race=${race} cur=${cur} rows=${rows} raceCode=${raceId}
+                onOpenRacer=${setDetailRacerId}
+                onLeave=${leaveRace}
+                onReplayTutorial=${replayTutorial}
+                onOpenSound=${() => setShowSound(true)}
+                say=${say} />`
         )}
       </div>
 
@@ -994,9 +1026,8 @@ function App() {
    ============================================================ */
 
 const TABS = [
-  { id: "home", label: "Home", accent: "gold" },
-  { id: "track", label: "Race Tracker", accent: "pink" },
-  { id: "racewin", label: "Racer Profiles", accent: "teal" },
+  { id: "dashboard", label: "Dashboard", accent: "gold" },
+  { id: "racewin", label: "Racer profiles", accent: "teal" },
 ];
 
 function TabNav({ tab, onChange }) {
@@ -1005,56 +1036,39 @@ function TabNav({ tab, onChange }) {
       ${TABS.map((t) => html`
         <button key=${t.id}
           class=${`tabnav__btn tabnav__btn--${t.accent} ` + (tab === t.id ? "tabnav__btn--on" : "")}
-          onClick=${() => onChange(t.id)}>${t.label}</button>`)}
+          onClick=${(e) => onChange(t.id, e)}>${t.label}</button>`)}
     </nav>`;
 }
 
-/* ---------- TRACK TAB — read-only progress, no editing here ---------- */
+/* ---------- HERO — podium + track, always visible above the tabs ---------- */
 
-function TrackTab({ race, rows, cur, goal, pooled, joined, leader }) {
+function RaceHero({ race, rows, cur }) {
   return html`
-    <div class="tab-panel">
-      <div class="scoreboard" ref=${registerTarget("scoreboard")}>
-        <div class="stat">
-          <div class="stat__k">Pooled so far</div>
-          <div class="stat__v"><span class="surf">${money(pooled, cur)}</span></div>
+    <div class="hero">
+      <section class="section">
+        <div class="podium" ref=${registerTarget("podium")}>
+          ${[1, 2, 3].map((n) => {
+            const r = rows.find((x) => x.rank === n);
+            return html`<div class=${`place place--${n} ${r ? "" : "place--none"}`}>
+              <div class="place__avatar avatar avatar--${r ? laneClass(r) : "auto"}" style=${r ? laneStyle(r) : ""}>
+                <span>${r ? initial(r.name) : "?"}</span>
+              </div>
+              <div class="place__block">
+                <div class="place__no">${n}</div>
+              </div>
+              <div class="place__name">${r ? r.name : "—"}</div>
+              <div class="place__pct">${r ? Math.round(r.pct * 100) + "%" : "open"}</div>
+            </div>`;
+          })}
         </div>
-        <div class="stat">
-          <div class="stat__k">Goal each</div>
-          <div class="stat__v">${money(goal, cur)}</div>
-        </div>
-        <div class="stat">
-          <div class="stat__k">Racers</div>
-          <div class="stat__v">${joined}<em>on the track</em></div>
-        </div>
-        <div class="stat">
-          <div class="stat__k">Out front</div>
-          <div class="stat__v" style="font-size:clamp(14px,4vw,17px)">
-            ${leader ? leader.name : html`<em>nobody yet</em>`}
-          </div>
-        </div>
-      </div>
+      </section>
 
       <section class="section">
         <h2 class="section__label">The Money Marathon</h2>
         <div class="panel track" ref=${registerTarget("lanes")}>
           ${rows.length === 0
-            ? html`<div class="empty"><strong>The track is empty.</strong>Add a racer on the Home tab to open the first lane.</div>`
+            ? html`<div class="empty"><strong>The track is empty.</strong>Add a racer on the Dashboard to open the first lane.</div>`
             : rows.map((r) => html`<${Lane} key=${r.id} r=${r} race=${race} cur=${cur} />`)}
-        </div>
-      </section>
-
-      <section class="section">
-        <h2 class="section__label">Podium 🏆</h2>
-        <div class="podium" ref=${registerTarget("podium")}>
-          ${[1, 2, 3].map((n) => {
-            const r = rows.find((x) => x.rank === n);
-            return html`<div class=${`place place--${n} ${r ? "" : "place--none"}`}>
-              <div class="place__no">${n}</div>
-              <div class="place__name">${r ? r.name : "—"}</div>
-              <div class="place__pct">${r ? Math.round(r.pct * 100) + "%" : "open"}</div>
-            </div>`;
-          })}
         </div>
       </section>
     </div>`;
@@ -1097,12 +1111,13 @@ function Lane({ r, race, cur }) {
 
 /* ---------- HOME TAB — setup, racers, characters, leave ---------- */
 
-function HomeTab({ race, cur, rows, raceCode, onPatchRace, onPatchRacer, onAddRacer, onRemoveRacer, onLeave, onReplayTutorial, onOpenSound, say }) {
+function HomeTab({ race, cur, rows, onPatchRace, onPatchRacer, onAddRacer, onRemoveRacer, say }) {
   const [form, setForm] = useState({ name: "", start: "", moving: "", finish: "" });
   const [uploading, setUploading] = useState({});
   const [cropTarget, setCropTarget] = useState(null);
   const [addAttempted, setAddAttempted] = useState(false);
   const [shakeN, setShakeN] = useState(0);
+  const [addingCharacter, setAddingCharacter] = useState(false);
   const characters = race.characters || [];
   const busy = !!cropTarget || Object.values(uploading).some(Boolean);
 
@@ -1125,6 +1140,13 @@ function HomeTab({ race, cur, rows, raceCode, onPatchRace, onPatchRacer, onAddRa
     setAddAttempted(false);
     onPatchRace({ characters: [...characters, { id: newId(8), ...form }] });
     setForm({ name: "", start: "", moving: "", finish: "" });
+    setAddingCharacter(false);
+  };
+
+  const cancelAddCharacter = () => {
+    setForm({ name: "", start: "", moving: "", finish: "" });
+    setAddAttempted(false);
+    setAddingCharacter(false);
   };
 
   const removeCharacter = async (id) => {
@@ -1173,31 +1195,22 @@ function HomeTab({ race, cur, rows, raceCode, onPatchRace, onPatchRacer, onAddRa
   return html`
     <div class="tab-panel">
       <section class="section">
-        <h2 class="section__label">Race setup</h2>
-        <div class="panel" ref=${registerTarget("currency")}>
-          <div class="setting-row">
-            <span class="setting-row__k">Currency</span>
-            <div class="setting-row__ctl">
-              <${Dropdown} className="dropdown--currency" value=${cur} ariaLabel="Currency"
-                options=${CURRENCIES.map((c) => ({ value: c.id, label: c.label }))}
-                onChange=${(v) => onPatchRace({ currency: v })} />
-            </div>
-          </div>
-          <div class="setting-row">
-            <span class="setting-row__k">Goal per person</span>
-            <div class="setting-row__ctl">
-              <span>${cur}</span>
-              <${LiveInput} className="field field--mono" style="width:120px"
-                value=${race.goal} inputmode="numeric" aria-label="Goal per person"
-                onCommit=${(v) => onPatchRace({ goal: Math.round(Number(v)) || 0 })} />
-            </div>
+        <div class="goalcard" ref=${registerTarget("currency")}>
+          <p class="goalcard__label">Goal per person</p>
+          <div class="goalcard__row">
+            <${Dropdown} className="dropdown--inline" compact=${true} value=${cur} ariaLabel="Currency"
+              options=${CURRENCIES.map((c) => ({ value: c.id, label: c.label }))}
+              onChange=${(v) => onPatchRace({ currency: v })} />
+            <${LiveInput} className="goalcard__amount"
+              value=${race.goal} inputmode="numeric" aria-label="Goal per person"
+              onCommit=${(v) => onPatchRace({ goal: Math.round(Number(v)) || 0 })} />
           </div>
         </div>
       </section>
 
       <section class="section">
         <h2 class="section__label">Racers</h2>
-        <div class="panel" ref=${registerTarget("racers_panel")}>
+        <div class="racerlist" ref=${registerTarget("racers_panel")}>
           ${rows.length === 0
             ? html`<div class="empty">No lanes yet. Add one below.</div>`
             : rows.map((r) => html`<${RacerIdentityRow} key=${r.id} r=${r} race=${race}
@@ -1211,55 +1224,52 @@ function HomeTab({ race, cur, rows, raceCode, onPatchRace, onPatchRacer, onAddRa
 
       <section class="section">
         <h2 class="section__label">Character library</h2>
-        <div class="panel" ref=${registerTarget("character_library")}>
-          <div class="charlist">
-            ${characters.length === 0
-              ? html`<div class="empty">No characters yet. Add one below.</div>`
-              : characters.map((c) => html`
-                  <div class="charrow" key=${c.id}>
-                    <div class="charrow__imgs">
-                      ${[c.start, c.moving, c.finish].filter(Boolean).map((u) =>
-                        html`<img src=${u} alt="" loading="lazy" />`)}
-                    </div>
-                    <span style="font-weight:700">${c.name}</span>
-                    <button class="btn btn--sm btn--ghost" style="margin-left:auto"
-                      onClick=${() => removeCharacter(c.id)}>Remove</button>
-                  </div>`)}
-          </div>
+        <div class="charlist" ref=${registerTarget("character_library")}>
+          ${characters.length === 0 && !addingCharacter
+            ? html`<div class="empty">No characters yet. Add one below.</div>`
+            : characters.map((c) => html`
+                <div class="charcard" key=${c.id}>
+                  <div class="charcard__head">
+                    <span class="charcard__name">${c.name}</span>
+                    <button class="charcard__remove" onClick=${() => removeCharacter(c.id)} aria-label="Remove character">×</button>
+                  </div>
+                  <div class="charcard__poses">
+                    ${["start", "moving", "finish"].map((k) => html`
+                      <div class="charcard__pose" key=${k}>
+                        ${c[k]
+                          ? html`<img src=${c[k]} alt="" loading="lazy" />`
+                          : html`<span class="charcard__pose-label">${k === "moving" ? "Running" : k[0].toUpperCase() + k.slice(1)}</span>`}
+                      </div>`)}
+                  </div>
+                </div>`)}
 
-          <div class="charform" key=${shakeN} style=${shakeN ? "animation:shake 0.4s" : ""}>
-            <input class=${"field" + (showInvalid && missing.name ? " field--invalid" : "")}
-              placeholder="Character name (e.g. Grey tabby)"
-              value=${form.name} onInput=${(e) => { const v = e.target.value; setForm((f) => ({ ...f, name: v })); }} />
-            ${showInvalid && missing.name && html`<div class="charform__err">Name is required.</div>`}
-            <div class="charform__pics">
-              <${ImagePicker} label="Start pose" value=${form.start} uploading=${uploading.start} disabled=${busy}
-                invalid=${showInvalid && missing.start}
-                onChange=${(v) => setForm((f) => ({ ...f, start: v }))} onPick=${(f) => pickFile("start", f)} />
-              <${ImagePicker} label="Running pose" value=${form.moving} uploading=${uploading.moving} disabled=${busy}
-                invalid=${showInvalid && missing.moving}
-                onChange=${(v) => setForm((f) => ({ ...f, moving: v }))} onPick=${(f) => pickFile("moving", f)} />
-              <${ImagePicker} label="Finish pose" value=${form.finish} uploading=${uploading.finish} disabled=${busy}
-                invalid=${showInvalid && missing.finish}
-                onChange=${(v) => setForm((f) => ({ ...f, finish: v }))} onPick=${(f) => pickFile("finish", f)} />
-            </div>
-            <div><button class="btn btn--pink" onClick=${addCharacter}>Add character</button></div>
-          </div>
+          ${addingCharacter && html`
+            <div class="charcard charcard--editing" key=${shakeN} style=${shakeN ? "animation:shake 0.4s" : ""}>
+              <div class="charcard__head">
+                <input class=${"field charcard__name-input" + (showInvalid && missing.name ? " field--invalid" : "")}
+                  placeholder="Character name" value=${form.name}
+                  onInput=${(e) => { const v = e.target.value; setForm((f) => ({ ...f, name: v })); }} />
+                <button class="charcard__remove" onClick=${cancelAddCharacter} aria-label="Cancel adding a character">×</button>
+              </div>
+              ${showInvalid && missing.name && html`<div class="charform__err">Name is required.</div>`}
+              <div class="charcard__editposes">
+                <${ImagePicker} label="Start pose" value=${form.start} uploading=${uploading.start} disabled=${busy}
+                  invalid=${showInvalid && missing.start}
+                  onChange=${(v) => setForm((f) => ({ ...f, start: v }))} onPick=${(f) => pickFile("start", f)} />
+                <${ImagePicker} label="Running pose" value=${form.moving} uploading=${uploading.moving} disabled=${busy}
+                  invalid=${showInvalid && missing.moving}
+                  onChange=${(v) => setForm((f) => ({ ...f, moving: v }))} onPick=${(f) => pickFile("moving", f)} />
+                <${ImagePicker} label="Finish pose" value=${form.finish} uploading=${uploading.finish} disabled=${busy}
+                  invalid=${showInvalid && missing.finish}
+                  onChange=${(v) => setForm((f) => ({ ...f, finish: v }))} onPick=${(f) => pickFile("finish", f)} />
+              </div>
+            </div>`}
         </div>
-      </section>
 
-      <section class="section">
-        <h2 class="section__label">This race</h2>
-        <div class="panel" ref=${registerTarget("race_code")} style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
-          <div>
-            <div class="setting-row__k">Race code</div>
-            <div class="setting-row__hint" style="margin-top:2px">Share <b>${raceCode}</b> so friends can join. Anyone with it can edit the race.</div>
-          </div>
-          <div style="display:flex;gap:8px">
-            <button class="btn btn--sm btn--ghost" onClick=${onReplayTutorial}>Watch full tutorial</button>
-            <button class="btn btn--sm btn--ghost" onClick=${onOpenSound}>Sound & Music</button>
-            <button class="btn btn--sm btn--danger-outline" onClick=${onLeave}>Leave this race</button>
-          </div>
+        <div style="margin-top:12px;display:flex;justify-content:center">
+          ${addingCharacter
+            ? html`<button class="btn btn--go" onClick=${addCharacter}>✓ Add character</button>`
+            : html`<button class="btn btn--go" onClick=${() => setAddingCharacter(true)}>+ Add character</button>`}
         </div>
       </section>
 
@@ -1393,17 +1403,20 @@ function ImagePicker({ label, value, uploading, disabled, invalid, onChange, onP
 
 function RacerIdentityRow({ r, race, onPatch, onRemove }) {
   return html`
-    <div class="idrow">
-      <div class=${`avatar avatar--sm avatar--${laneClass(r)}`} style=${laneStyle(r)}><span>${initial(r.name)}</span></div>
-      <${LiveInput} className="field" style="flex:2;min-width:120px"
-        value=${r.name} placeholder="Who's in this lane?" aria-label="Racer name"
-        onCommit=${(v) => onPatch({ name: v })} />
-      <${BankPicker} value=${r.bank} onChange=${(v) => onPatch({ bank: v })} />
-      <${Dropdown} className="dropdown--char" value=${r.characterId || ""} ariaLabel="Character"
-        options=${[{ value: "", label: "No character" }, ...(race.characters || []).map((c) => ({ value: c.id, label: c.name }))]}
-        onChange=${(v) => onPatch({ characterId: v })} />
-      <${ColorPicker} value=${r.color || ""} onChange=${(v) => onPatch({ color: v })} />
-      <button class="btn btn--sm btn--ghost" onClick=${onRemove} aria-label="Remove racer">Remove</button>
+    <div class="racercard">
+      <div class="racercard__row">
+        <${LiveInput} className="field racercard__name"
+          value=${r.name} placeholder="Who's in this lane?" aria-label="Racer name"
+          onCommit=${(v) => onPatch({ name: v })} />
+        <${BankPicker} value=${r.bank} onChange=${(v) => onPatch({ bank: v })} />
+      </div>
+      <div class="racercard__row">
+        <${Dropdown} className="dropdown--char" value=${r.characterId || ""} ariaLabel="Character"
+          options=${[{ value: "", label: "No character" }, ...(race.characters || []).map((c) => ({ value: c.id, label: c.name }))]}
+          onChange=${(v) => onPatch({ characterId: v })} />
+        <${ColorPicker} value=${r.color || ""} onChange=${(v) => onPatch({ color: v })} />
+        <button class="racercard__remove" onClick=${onRemove} aria-label="Remove racer">×</button>
+      </div>
     </div>`;
 }
 
@@ -1414,10 +1427,13 @@ function ColorPicker({ value, onChange }) {
     ...PROFILE_COLORS.map((c) => ({ value: c.id, label: c.label, swatch: c.id })),
     custom ? { value, label: "Custom", swatch: value } : { value: "__custom__", label: "Custom…", swatch: "" },
   ];
+  /* the box itself fills solid with whatever's actually picked — preset or
+     custom — so you can see exactly what it'll look like, not just a dot */
+  const fillColor = custom ? value : LANE_PRESET_FILLS[value] || null;
   return html`
     <div style="flex:1;min-width:120px">
       <${Dropdown} className="dropdown--color" value=${custom ? value : (value || "")} ariaLabel="Profile color"
-        options=${options}
+        options=${options} fillColor=${fillColor}
         onChange=${(v) => (v === "__custom__" || isHexColor(v) ? setWheelOpen(true) : onChange(v))} />
       ${wheelOpen && html`<${ColorWheelModal} value=${custom ? value : "#37e0c8"} onChange=${onChange}
         onClose=${() => setWheelOpen(false)} />`}
@@ -1544,18 +1560,36 @@ function BankPicker({ value, onChange }) {
 
 /* ---------- RACER-PROFILES TAB — roster list, tap a racer to open their page ---------- */
 
-function RaceWinTab({ race, cur, rows, onOpenRacer }) {
+function RaceWinTab({ race, cur, rows, raceCode, onOpenRacer, onLeave, onReplayTutorial, onOpenSound, say }) {
   const named = rows.filter((r) => (r.name || "").trim());
   return html`
     <div class="tab-panel">
       <section class="section">
-        <h2 class="section__label">Racer Profiles</h2>
         ${named.length === 0
-          ? html`<div class="empty"><strong>No racers yet.</strong>Add someone on the Home tab first.</div>`
+          ? html`<div class="empty"><strong>No racers yet.</strong>Add someone on the Dashboard first.</div>`
           : html`<div class="panel" ref=${registerTarget("roster_row")} style="padding:0">
               ${named.map((r) => html`<${RosterRow} key=${r.id} r=${r} race=${race} cur=${cur}
                 onClick=${() => onOpenRacer(r.id)} />`)}
             </div>`}
+      </section>
+
+      <section class="section">
+        <div class="racecard" ref=${registerTarget("race_code")}>
+          <p class="racecard__label">Race code</p>
+          <div class="racecard__code">
+            <span>${raceCode}</span>
+            <button class="racecard__copy" aria-label="Copy race code" onClick=${() => {
+              navigator.clipboard.writeText(raceCode)
+                .then(() => say("Race code copied"))
+                .catch(() => say(`Code: ${raceCode}`));
+            }}>⧉</button>
+          </div>
+          <div class="racecard__row">
+            <button class="btn btn--sm racecard__btn" onClick=${onReplayTutorial}>Watch tutorial</button>
+            <button class="btn btn--sm racecard__btn" onClick=${onOpenSound}>Sound & music</button>
+          </div>
+          <button class="btn btn--sm btn--danger-outline" style="width:100%" onClick=${onLeave}>Leave this race</button>
+        </div>
       </section>
     </div>`;
 }
@@ -1744,16 +1778,14 @@ const registerTarget = (key) => (el) => {
 };
 
 const TUTORIAL_STEPS = [
-  // ---- Home ----
-  { tab: "home", key: "currency", title: "Set your currency & goal", description: "Pick the currency and the exact amount everyone's racing to save. Change it anytime — every racer's progress updates instantly." },
-  { tab: "home", key: "racers_panel", title: "Your racers", description: "Everyone racing shows up here. Edit any racer's name, bank/wallet, character, and profile color right from this list." },
-  { tab: "home", key: "add_racer", title: "Add a racer", description: "Tap this to open a new lane for a friend who isn't racing yet." },
-  { tab: "home", key: "character_library", title: "Character library", description: "Add as many characters as you like — paste an image URL or upload your own photo for the start, running, and finish poses." },
-  { tab: "home", key: "race_code", title: "Your race code", description: "This is how friends join — they enter this exact code with their own name. Anyone with it can see and edit the whole race." },
-  // ---- Race Tracker ----
-  { tab: "track", key: "scoreboard", title: "Track the pool", description: "See how much everyone's saved together, the goal per person, and who's out front — all at a glance." },
-  { tab: "track", key: "lanes", title: "Watch the race", description: "Every racer's lane fills up as they save. First one to the flag wins." },
-  { tab: "track", key: "podium", title: "The podium", description: "The top 3 racers by percentage saved, updated live as everyone logs their money." },
+  // ---- Hero (always visible, above the tabs) ----
+  { tab: "dashboard", key: "lanes", title: "Watch the race", description: "Every racer's lane fills up as they save. First one to the flag wins." },
+  { tab: "dashboard", key: "podium", title: "The podium", description: "The top 3 racers by percentage saved, updated live as everyone logs their money." },
+  // ---- Dashboard ----
+  { tab: "dashboard", key: "currency", title: "Set your goal", description: "Pick the currency and the exact amount everyone's racing to save. Change it anytime — every racer's progress updates instantly." },
+  { tab: "dashboard", key: "racers_panel", title: "Your racers", description: "Everyone racing shows up here. Edit any racer's name, bank/wallet, character, and profile color right from this list." },
+  { tab: "dashboard", key: "add_racer", title: "Add a racer", description: "Tap this to open a new lane for a friend who isn't racing yet." },
+  { tab: "dashboard", key: "character_library", title: "Character library", description: "Add as many characters as you like — paste an image URL or upload your own photo for the start, running, and finish poses." },
   // ---- Racer Profiles ----
   { tab: "racewin", key: "roster_row", title: "Open a racer's page", description: "Tap any racer here to open their own private page and log what they've saved." },
   { tab: "racewin", key: "profile_chart", title: "Their progress ring", description: "This donut shows exactly how close this racer is to their goal — gold or their own color for saved, red for what's left.", openDetail: true },
@@ -1761,6 +1793,7 @@ const TUTORIAL_STEPS = [
   { tab: "racewin", key: "profile_plan", title: "Build a savings plan", description: "Pick a date to save by and how often — every day, every few days, or a specific weekday. The whole log below fills itself in automatically.", openDetail: true },
   { tab: "racewin", key: "profile_log", title: "Log savings & lock them in", description: "Date, amount, and a Lock checkbox for every planned or logged deposit. Tap Lock once you've actually set the money aside — you can also edit any amount right here.", openDetail: true },
   { tab: "racewin", key: "profile_addrow", title: "Add manually or start over", description: "Add a one-off deposit here anytime, or hit Clear log to wipe the whole plan and start fresh.", openDetail: true },
+  { tab: "racewin", key: "race_code", title: "Your race code", description: "This is how friends join — they enter this exact code with their own name. Anyone with it can see and edit the whole race." },
 ];
 
 function TutorialWelcome({ onStart, onSkip }) {
