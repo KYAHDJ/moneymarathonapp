@@ -32,11 +32,11 @@ const newId = (n = 16) => {
 };
 
 const money = (n, cur = "₱") =>
-  cur + new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(Math.round((n || 0) * 100) / 100);
+  cur + new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(Math.round(n || 0));
 
 const compact = (n, cur = "₱") => {
   const v = Math.abs(n || 0);
-  if (v >= 1000000) return cur + (n / 1000000).toFixed(1).replace(/\.0$/, "") + "M";
+  if (v >= 1000000) return cur + Math.round(n / 1000000) + "M";
   if (v >= 10000) return cur + Math.round(n / 1000) + "k";
   return money(n, cur);
 };
@@ -123,7 +123,7 @@ const DEFAULT_CHARACTERS = [
 ];
 
 const PROFILE_COLORS = [
-  { id: "", label: "Auto" },
+  { id: "", label: "Auto-pick color" },
   { id: "c0", label: "Gold" },
   { id: "c1", label: "Pink" },
   { id: "c2", label: "Peach" },
@@ -844,7 +844,7 @@ function App() {
 
   const editEntryAmount = (r, eid, amount) =>
     patchRacer(r.id, {
-      entries: (r.entries || []).map((e) => (e.id === eid ? { ...e, amount: Number(amount) || 0 } : e)),
+      entries: (r.entries || []).map((e) => (e.id === eid ? { ...e, amount: Math.round(Number(amount) || 0) } : e)),
     });
 
   const clearLog = async (r) => {
@@ -852,15 +852,21 @@ function App() {
     return patchRacer(r.id, { entries: [], targetDate: "", cadence: "every:1" });
   };
 
-  /* target date / cadence change → (re)build the planned, uncheck-yet entries for the remaining balance */
+  /* target date / cadence change → (re)build the planned, uncheck-yet entries for the remaining balance.
+     every installment is a whole number, and the last one absorbs whatever rounding left over so the
+     total lands exactly on the remaining balance — never over, never under. */
   const applySavingsPlan = (r, targetDate, cadence) => {
-    const remaining = Math.max(0, (Number(race.goal) || 0) - r.saved);
+    const remaining = Math.max(0, Math.round((Number(race.goal) || 0) - r.saved));
     const keep = (r.entries || []).filter((e) => !(e.source === "plan" && !e.confirmed));
     const patch = { targetDate, cadence };
     if (targetDate && remaining > 0) {
       const dates = scheduleDates(targetDate, cadence);
-      const per = dates.length ? Math.round((remaining / dates.length) * 100) / 100 : 0;
-      const planned = dates.map((d) => ({ id: newId(8), amount: per, date: d, confirmed: false, source: "plan" }));
+      const per = dates.length ? Math.round(remaining / dates.length) : 0;
+      const planned = dates.map((d, i) => ({
+        id: newId(8),
+        amount: i === dates.length - 1 ? remaining - per * (dates.length - 1) : per,
+        date: d, confirmed: false, source: "plan",
+      }));
       patch.entries = [...keep, ...planned];
     } else {
       patch.entries = keep;
@@ -1182,8 +1188,8 @@ function HomeTab({ race, cur, rows, raceCode, onPatchRace, onPatchRacer, onAddRa
             <div class="setting-row__ctl">
               <span>${cur}</span>
               <${LiveInput} className="field field--mono" style="width:120px"
-                value=${race.goal} inputmode="decimal" aria-label="Goal per person"
-                onCommit=${(v) => onPatchRace({ goal: Number(v) || 0 })} />
+                value=${race.goal} inputmode="numeric" aria-label="Goal per person"
+                onCommit=${(v) => onPatchRace({ goal: Math.round(Number(v)) || 0 })} />
             </div>
           </div>
         </div>
@@ -1651,7 +1657,7 @@ function RacerDetailPage({ r, race, cur, onBack, onAddEntry, onToggleEntry, onRe
   const entries = [...(r.entries || [])].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 
   const submit = () => {
-    const amt = Number(amount);
+    const amt = Math.round(Number(amount));
     if (!amt) return;
     onAddEntry({ amount: amt, date: date || today(), confirmed: true });
     setAmount("");
@@ -1670,6 +1676,7 @@ function RacerDetailPage({ r, race, cur, onBack, onAddEntry, onToggleEntry, onRe
 
           <table class="stattable" ref=${registerTarget("profile_stats")}>
             <tbody>
+              <tr><td class="stattable__label">Bank / Wallet</td><td class="stattable__value">${r.bank || "—"}</td></tr>
               <tr><td class="stattable__label">Goal</td><td class="stattable__value">${money(Number(race.goal) || 0, cur)}</td></tr>
               <tr><td class="stattable__label">Amount Saved</td><td class="stattable__value">${money(r.saved, cur)}</td></tr>
               <tr><td class="stattable__label">Remaining Balance</td><td class="stattable__value">${money(remaining, cur)}</td></tr>
@@ -1700,7 +1707,7 @@ function RacerDetailPage({ r, race, cur, onBack, onAddEntry, onToggleEntry, onRe
                     <span class="entry__date">${prettyDate(e.date)}</span>
                     <span class="entry__amt">
                       <span class="entry__amt-cur">${cur}</span>
-                      <${LiveInput} className="entry__amt-input" value=${e.amount} inputmode="decimal"
+                      <${LiveInput} className="entry__amt-input" value=${e.amount} inputmode="numeric"
                         aria-label="Entry amount" onCommit=${(v) => onEditAmount(e.id, v)} />
                     </span>
                     <button class=${`lockbox ${e.confirmed ? "lockbox--on" : ""}`}
@@ -1711,7 +1718,7 @@ function RacerDetailPage({ r, race, cur, onBack, onAddEntry, onToggleEntry, onRe
           </div>
 
           <div class="detailcard__addrow" ref=${registerTarget("profile_addrow")}>
-            <input class="field field--mono" inputmode="decimal" placeholder=${`Amount in ${cur}`}
+            <input class="field field--mono" inputmode="numeric" placeholder=${`Amount in ${cur}`}
               value=${amount} onInput=${(e) => setAmount(e.target.value)}
               onKeyDown=${(e) => e.key === "Enter" && submit()} />
             <input class="field field--mono" type="date" value=${date} onInput=${(e) => setDate(e.target.value)} />
