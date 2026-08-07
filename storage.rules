@@ -1,0 +1,15 @@
+rules_version = '2';
+
+// Character start/moving/finish photos, uploaded from the Home tab.
+// Publicly readable (they're shown on the race track); writes require
+// anonymous sign-in. 20MB ceiling — generous enough for animated GIFs.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /characters/{fileName} {
+      allow read: if true;
+      allow write: if request.auth != null
+        && request.resource.size < 20 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+  }
+}

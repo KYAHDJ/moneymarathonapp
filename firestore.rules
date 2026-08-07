@@ -1,0 +1,44 @@
+rules_version = '2';
+
+// Money Marathon's model: the race ID in the share link (?r=...) is the only
+// "permission" — whoever has the link can read and edit everything in that
+// race. There is no per-person ownership. Anonymous auth is required only so
+// a random bot can't hammer the database without even opening the app.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /races/{raceId} {
+      allow read: if request.auth != null;
+
+      allow create: if request.auth != null
+        && request.resource.data.keys().hasAll(['tripName', 'goal', 'currency', 'characters', 'createdAt'])
+        && request.resource.data.tripName is string
+        && request.resource.data.tripName.size() < 200
+        && request.resource.data.goal is number
+        && request.resource.data.goal >= 0
+        && request.resource.data.currency is string
+        && request.resource.data.currency.size() < 10
+        && request.resource.data.characters is list;
+
+      allow update: if request.auth != null
+        && (!('tripName' in request.resource.data) || (request.resource.data.tripName is string && request.resource.data.tripName.size() < 200))
+        && (!('goal' in request.resource.data) || (request.resource.data.goal is number && request.resource.data.goal >= 0))
+        && (!('currency' in request.resource.data) || (request.resource.data.currency is string && request.resource.data.currency.size() < 10))
+        && (!('characters' in request.resource.data) || request.resource.data.characters is list);
+
+      allow delete: if false;
+
+      match /racers/{racerId} {
+        allow read: if request.auth != null;
+
+        allow create, update: if request.auth != null
+          && (!('name' in request.resource.data) || (request.resource.data.name is string && request.resource.data.name.size() < 100))
+          && (!('bank' in request.resource.data) || (request.resource.data.bank is string && request.resource.data.bank.size() < 100))
+          && (!('entries' in request.resource.data) || (request.resource.data.entries is list && request.resource.data.entries.size() < 500))
+          && (!('order' in request.resource.data) || request.resource.data.order is number);
+
+        allow delete: if request.auth != null;
+      }
+    }
+  }
+}
