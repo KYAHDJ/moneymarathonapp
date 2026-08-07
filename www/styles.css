@@ -651,7 +651,7 @@ input, select { font-family: inherit; }
   place-items: center;
   overflow: hidden;
   font-weight: 700;
-  color: var(--lane-ink, var(--ink-faint));
+  color: var(--lane-contrast, var(--lane-ink, var(--ink-faint)));
 }
 
 .avatar img { width: 100%; height: 100%; object-fit: cover; }
@@ -722,7 +722,7 @@ input, select { font-family: inherit; }
 
 .detailcard__banner {
   background: var(--lane-fill, var(--gold-fill));
-  color: var(--lane-ink, var(--gold-deep));
+  color: var(--lane-contrast, var(--lane-ink, var(--gold-deep)));
   font-family: var(--display);
   font-weight: 700;
   font-size: clamp(18px, 5vw, 22px);
@@ -752,7 +752,7 @@ input, select { font-family: inherit; }
 
 .stattable__label {
   font-weight: 700;
-  color: var(--lane-ink, var(--ink-faint));
+  color: var(--lane-contrast, var(--lane-ink, var(--ink-faint)));
   background: var(--lane-fill, var(--grid-soft));
   width: 46%;
 }
@@ -766,7 +766,7 @@ input, select { font-family: inherit; }
 
 .stattable__pctrow td {
   background: var(--lane-fill, var(--grid-soft));
-  color: var(--lane-ink, var(--ink-faint));
+  color: var(--lane-contrast, var(--lane-ink, var(--ink-faint)));
   font-weight: 700;
   text-align: center;
 }

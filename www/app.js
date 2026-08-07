@@ -81,9 +81,22 @@ const hexToHsv = (hex) => {
    (a custom hex color is applied separately via laneStyle, this just needs SOME valid class) */
 const laneClass = (r) => (r.color && /^c[0-5]$/.test(r.color) ? r.color : `c${(Math.max(1, r.slot || 1) - 1) % 6}`);
 
-/* inline style override for a custom hex color, empty string for presets/auto */
+/* black or white — whichever reads on top of a given hex. Only ever used for
+   the tiny bit of text that has to sit directly on a custom fill (an avatar
+   initial, a banner label); it never touches the fill itself. */
+const contrastOn = (hex) => {
+  const full = hex.length === 4 ? `#${[...hex.slice(1)].map((c) => c + c).join("")}` : hex;
+  const r = parseInt(full.slice(1, 3), 16), g = parseInt(full.slice(3, 5), 16), b = parseInt(full.slice(5, 7), 16);
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.6 ? "var(--ink)" : "#fff";
+};
+
+/* inline style override for a custom hex color, empty string for presets/auto.
+   --lane-fill/--lane-ink are the exact picked hex everywhere, unmodified —
+   --lane-contrast exists only so text drawn on top of the fill stays legible */
 const laneStyle = (r) =>
-  isHexColor(r.color) ? `--lane-fill:color-mix(in srgb, ${r.color} 22%, white);--lane-ink:${r.color};` : "";
+  isHexColor(r.color)
+    ? `--lane-fill:${r.color};--lane-ink:${r.color};--lane-contrast:${contrastOn(r.color)};`
+    : "";
 
 const DEFAULT_CHARACTERS = [
   {
