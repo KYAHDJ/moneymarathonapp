@@ -10,6 +10,7 @@ android/captures/
 android/.cxx/
 *.apk
 *.aab
+!apk/app-debug.apk
 
 # IDE / tooling
 .idea/
