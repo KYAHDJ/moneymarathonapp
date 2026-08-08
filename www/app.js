@@ -554,10 +554,11 @@ function App() {
   const [authed, setAuthed] = useState(false);
   const [toast, setToast] = useState(null);
   const [fatal, setFatal] = useState(null);
-  const [tab, setTab] = useState("dashboard");
+  const [tab, setTab] = useState("track");
   const [detailRacerId, setDetailRacerId] = useState(null);
-  const [tabOrigin, setTabOrigin] = useState("50% 0%");
+  const [tabOrigin, setTabOrigin] = useState("50% 100%");
   const [tabEntering, setTabEntering] = useState(false);
+  const [tabLeaving, setTabLeaving] = useState(false);
   const tabContentRef = useRef(null);
   const [showSplash, setShowSplash] = useState(true);
   const [splashOut, setSplashOut] = useState(false);
@@ -574,8 +575,10 @@ function App() {
     setTimeout(() => setToast(null), 2800);
   };
 
-  /* switching tabs "grows" the new content from wherever the tab button was
-     tapped (a container-transform), instead of just cutting to it */
+  /* Race Tracker is home. Dashboard and Racer profiles are pushed on top of
+     it as their own full screens — entering "grows" from wherever the
+     button was tapped (a container-transform), and the back button/gesture
+     shrinks the same way back down into that same spot. */
   const changeTab = (id, e) => {
     setDetailRacerId(null);
     if (e?.currentTarget && tabContentRef.current) {
@@ -589,6 +592,13 @@ function App() {
     setTab(id);
   };
 
+  const goBack = () => {
+    if (tab === "track") return;
+    setDetailRacerId(null);
+    setTabLeaving(true);
+    setTimeout(() => { setTab("track"); setTabLeaving(false); }, 300);
+  };
+
   /* a short setTimeout instead of requestAnimationFrame — rAF doesn't
      reliably fire in non-composited/backgrounded contexts (same issue hit
      with the music fade), a timeout does regardless of paint state */
@@ -598,7 +608,8 @@ function App() {
     return () => clearTimeout(t);
   }, [tabEntering]);
 
-  /* swipe left/right between Home / Race Tracker / Racer Profiles — not while
+  /* swipe from Race Tracker opens whichever screen the swipe direction
+     points at; swiping on Dashboard/Racer profiles goes back — not while
      drilled into a racer's own page, where a horizontal drag means something else */
   const swipeStart = useRef(null);
   const onSwipeDown = (e) => { swipeStart.current = { x: e.clientX, y: e.clientY }; };
@@ -609,18 +620,20 @@ function App() {
     const dx = e.clientX - start.x;
     const dy = e.clientY - start.y;
     if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-    const idx = TABS.findIndex((t) => t.id === tab);
-    const next = TABS[idx + (dx < 0 ? 1 : -1)];
-    if (next) changeTab(next.id);
+    if (tab !== "track") { goBack(); return; }
+    changeTab(dx < 0 ? "dashboard" : "racewin");
   };
 
   /* Android hardware/gesture back button: Race Tracker is "home" — back from
-     anywhere else returns there first, and only asks to quit once you're
+     anywhere else returns there first (with the same shrink-down animation
+     as the on-screen back button), and only asks to quit once you're
      already on it, instead of suddenly closing the app. */
   const tabRef = useRef(tab);
   const detailRef = useRef(detailRacerId);
+  const goBackRef = useRef(goBack);
   useEffect(() => { tabRef.current = tab; }, [tab]);
   useEffect(() => { detailRef.current = detailRacerId; }, [detailRacerId]);
+  useEffect(() => { goBackRef.current = goBack; });
 
   useEffect(() => {
     const CapApp = window.Capacitor?.Plugins?.App;
@@ -630,7 +643,7 @@ function App() {
        platforms (not a Promise) — Promise.resolve() normalizes both cases */
     Promise.resolve(CapApp.addListener("backButton", async () => {
       if (detailRef.current) { setDetailRacerId(null); return; }
-      if (tabRef.current !== "dashboard") { changeTab("dashboard"); return; }
+      if (tabRef.current !== "track") { goBackRef.current(); return; }
       if (await askConfirm("Quit Money Marathon?", { okLabel: "Quit", danger: false })) CapApp.exitApp();
     })).then((h) => { handle = h; });
     return () => { handle?.remove(); };
@@ -950,39 +963,33 @@ function App() {
       <div style="height:env(safe-area-inset-top, 0px)"></div>
 
       <header class="masthead">
-        <div style="flex:1;min-width:240px">
-          <p class="wordmark">MONEY <span>MARATHON</span></p>
-          <div class="trip-name-wrap">
-            <${LiveInput}
-              className="trip-name"
-              value=${race.tripName}
-              aria-label="Trip name"
-              placeholder="Name this race"
-              onCommit=${(v) => patchRace({ tripName: v })} />
-            <span class="trip-name-wrap__pencil" aria-hidden="true">✎</span>
-          </div>
-        </div>
-        <div class="masthead__side">
-          <span class=${"sync " + (status === "live" ? "" : "sync--off")}>
-            <i class="sync__dot"></i>${status === "live" ? "Live" : "Offline"}
-          </span>
+        <div class="trip-name-wrap trip-name-wrap--full">
+          <${LiveInput}
+            className="trip-name"
+            value=${race.tripName}
+            aria-label="Trip name"
+            placeholder="Name this race"
+            onCommit=${(v) => patchRace({ tripName: v })} />
+          <span class="trip-name-wrap__pencil" aria-hidden="true">✎</span>
         </div>
       </header>
 
-      <${RaceHero} race=${race} rows=${rows} cur=${cur} />
-
-      <${TabNav} tab=${tab} onChange=${changeTab} />
-
-      <div ref=${tabContentRef} class=${"tab-content" + (tabEntering ? " tab-content--entering" : "")}
+      <div ref=${tabContentRef}
+        class=${"tab-content" + ((tabEntering || tabLeaving) ? " tab-content--entering" : "")}
         style=${`transform-origin:${tabOrigin}`}
         onPointerDown=${onSwipeDown} onPointerUp=${onSwipeUp}>
-        ${tab === "dashboard" && html`<${HomeTab}
-          race=${race} cur=${cur} rows=${rows}
-          onPatchRace=${patchRace}
-          onPatchRacer=${patchRacer}
-          onAddRacer=${addRacer}
-          onRemoveRacer=${removeRacer}
-          say=${say} />`}
+
+        ${tab === "track" && html`<${RaceHero} race=${race} rows=${rows} cur=${cur} />`}
+
+        ${tab === "dashboard" && html`
+          <button class="backbtn" onClick=${goBack}>← Back</button>
+          <${HomeTab}
+            race=${race} cur=${cur} rows=${rows}
+            onPatchRace=${patchRace}
+            onPatchRacer=${patchRacer}
+            onAddRacer=${addRacer}
+            onRemoveRacer=${removeRacer}
+            say=${say} />`}
 
         ${tab === "racewin" && (
           detailRacerId
@@ -997,14 +1004,18 @@ function App() {
                     onClearLog=${() => clearLog(activeRow)} />`
                 : html`<div class="tab-panel"><div class="empty">This racer was removed.</div>
                     <button class="btn" onClick=${() => setDetailRacerId(null)}>← Back</button></div>`)
-            : html`<${RaceWinTab} race=${race} cur=${cur} rows=${rows} raceCode=${raceId}
-                onOpenRacer=${setDetailRacerId}
-                onLeave=${leaveRace}
-                onReplayTutorial=${replayTutorial}
-                onOpenSound=${() => setShowSound(true)}
-                say=${say} />`
+            : html`
+                <button class="backbtn" onClick=${goBack}>← Back</button>
+                <${RaceWinTab} race=${race} cur=${cur} rows=${rows} raceCode=${raceId}
+                  onOpenRacer=${setDetailRacerId}
+                  onLeave=${leaveRace}
+                  onReplayTutorial=${replayTutorial}
+                  onOpenSound=${() => setShowSound(true)}
+                  say=${say} />`
         )}
       </div>
+
+      ${tab === "track" && html`<${TabNav} onChange=${changeTab} />`}
 
       <p style="text-align:center;color:var(--ink-faint);font-size:12px;margin-top:40px">
         Racers on this race can see and edit everything. Share the code only with people you trust.
@@ -1030,17 +1041,16 @@ const TABS = [
   { id: "racewin", label: "Racer profiles", accent: "teal" },
 ];
 
-function TabNav({ tab, onChange }) {
+function TabNav({ onChange }) {
   return html`
     <nav class="tabnav">
       ${TABS.map((t) => html`
-        <button key=${t.id}
-          class=${`tabnav__btn tabnav__btn--${t.accent} ` + (tab === t.id ? "tabnav__btn--on" : "")}
+        <button key=${t.id} class=${`tabnav__btn tabnav__btn--${t.accent}`}
           onClick=${(e) => onChange(t.id, e)}>${t.label}</button>`)}
     </nav>`;
 }
 
-/* ---------- HERO — podium + track, always visible above the tabs ---------- */
+/* ---------- RACE TRACKER (home) — podium + track ---------- */
 
 function RaceHero({ race, rows, cur }) {
   return html`
@@ -1049,9 +1059,11 @@ function RaceHero({ race, rows, cur }) {
         <div class="podium" ref=${registerTarget("podium")}>
           ${[1, 2, 3].map((n) => {
             const r = rows.find((x) => x.rank === n);
+            const character = r ? (race.characters || []).find((c) => c.id === r.characterId) : null;
+            const face = character ? (character.finish || character.moving || character.start) : null;
             return html`<div class=${`place place--${n} ${r ? "" : "place--none"}`}>
               <div class="place__avatar avatar avatar--${r ? laneClass(r) : "auto"}" style=${r ? laneStyle(r) : ""}>
-                <span>${r ? initial(r.name) : "?"}</span>
+                ${face ? html`<img src=${face} alt="" loading="lazy" />` : html`<span>${r ? initial(r.name) : "?"}</span>`}
               </div>
               <div class="place__block">
                 <div class="place__no">${n}</div>
@@ -1778,9 +1790,9 @@ const registerTarget = (key) => (el) => {
 };
 
 const TUTORIAL_STEPS = [
-  // ---- Hero (always visible, above the tabs) ----
-  { tab: "dashboard", key: "lanes", title: "Watch the race", description: "Every racer's lane fills up as they save. First one to the flag wins." },
-  { tab: "dashboard", key: "podium", title: "The podium", description: "The top 3 racers by percentage saved, updated live as everyone logs their money." },
+  // ---- Race Tracker (home) ----
+  { tab: "track", key: "lanes", title: "Watch the race", description: "Every racer's lane fills up as they save. First one to the flag wins." },
+  { tab: "track", key: "podium", title: "The podium", description: "The top 3 racers by percentage saved, updated live as everyone logs their money." },
   // ---- Dashboard ----
   { tab: "dashboard", key: "currency", title: "Set your goal", description: "Pick the currency and the exact amount everyone's racing to save. Change it anytime — every racer's progress updates instantly." },
   { tab: "dashboard", key: "racers_panel", title: "Your racers", description: "Everyone racing shows up here. Edit any racer's name, bank/wallet, character, and profile color right from this list." },

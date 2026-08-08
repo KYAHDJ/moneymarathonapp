@@ -130,6 +130,8 @@ input, select { font-family: inherit; }
 .wordmark span { color: var(--pink-deep); }
 
 .trip-name-wrap { position: relative; max-width: 620px; }
+.trip-name-wrap--full { max-width: none; width: 100%; }
+.trip-name-wrap--full .trip-name { text-align: center; padding-left: 40px; }
 
 .trip-name {
   font-family: var(--display);
@@ -200,16 +202,27 @@ input, select { font-family: inherit; }
 
 .hero { margin-top: 18px; }
 
+/* fixed to the bottom of the viewport, only shown on Race Tracker — it
+   doesn't scroll away with the page content */
 .tabnav {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 50;
   display: flex;
   gap: 10px;
-  margin-top: 22px;
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px));
+  background: var(--paper);
+  border-top: 1px solid var(--grid);
 }
 
 .tabnav__btn {
   flex: 1;
-  background: var(--grid-soft);
-  color: var(--ink-dim);
+  background: var(--ink);
+  color: #fff;
   border: none;
   border-radius: var(--r-md);
   font-family: var(--display);
@@ -217,14 +230,22 @@ input, select { font-family: inherit; }
   font-size: 14px;
   letter-spacing: 0.01em;
   padding: 14px 10px;
-  transition: background 0.15s, color 0.15s;
+  transition: opacity 0.15s;
 }
-.tabnav__btn:hover { background: var(--teal-fill); }
-
-.tabnav__btn--gold.tabnav__btn--on { background: var(--ink); color: #fff; }
-.tabnav__btn--teal.tabnav__btn--on { background: var(--teal); color: #fff; }
+.tabnav__btn:hover { opacity: 0.9; }
+.tabnav__btn--teal { background: var(--teal); }
 
 .tab-panel { margin-top: 4px; }
+
+.backbtn {
+  background: none;
+  border: none;
+  color: var(--teal);
+  font-weight: 700;
+  font-size: 14px;
+  padding: 6px 0 14px;
+  font-family: inherit;
+}
 
 /* container-transform: the new tab "grows" from wherever its button was tapped */
 .tab-content {
