@@ -1557,10 +1557,13 @@ function BankPicker({ value, onChange }) {
   const [asking, setAsking] = useState(false);
   const [draft, setDraft] = useState(value || "");
 
+  /* once a custom bank is set, the "Other…" option's own label becomes
+     that value — so the dropbox itself shows what you typed, no separate
+     caption underneath */
   const options = [
     { value: "", label: "Bank / wallet" },
     ...BANKS.map((b) => ({ value: b, label: b })),
-    { value: "other", label: "Other…" },
+    { value: "other", label: preset === "other" && value ? value : "Other…" },
   ];
 
   const openOther = () => { setDraft(!known ? value || "" : ""); setAsking(true); };
@@ -1570,8 +1573,6 @@ function BankPicker({ value, onChange }) {
     <div style="flex:1;min-width:130px">
       <${Dropdown} className="dropdown--bank" value=${preset} ariaLabel="Bank or wallet"
         options=${options} onChange=${(v) => (v === "other" ? openOther() : onChange(v))} />
-      ${preset === "other" && value && html`
-        <div class="setting-row__hint" style="margin-top:4px;cursor:pointer" onClick=${openOther}>${value} (tap to edit)</div>`}
 
       ${asking && html`
         <div class="modal-overlay" onClick=${(e) => { if (e.target === e.currentTarget) setAsking(false); }}>
