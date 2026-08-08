@@ -14,7 +14,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-auth.js";
 import {
   initializeFirestore, persistentLocalCache, persistentSingleTabManager,
-  doc, collection, query, orderBy, onSnapshot,
+  doc, collection, query, orderBy, onSnapshot, enableNetwork,
   setDoc, updateDoc, deleteDoc, getDoc, getDocs, serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js";
 import {
@@ -555,6 +555,7 @@ function App() {
   const [race, setRace] = useState(null);
   const [racers, setRacers] = useState([]);
   const [status, setStatus] = useState("connecting");
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [authed, setAuthed] = useState(false);
   const [toast, setToast] = useState(null);
   const [fatal, setFatal] = useState(null);
@@ -579,6 +580,27 @@ function App() {
   const say = (msg, bad = false) => {
     setToast({ msg, bad });
     setTimeout(() => setToast(null), bad ? 5000 : 2800);
+  };
+
+  /* offline is fine — the local cache still shows everything and edits
+     still save locally, they just queue until a connection comes back.
+     This only tracks whether there's a network path at all; tapping Sync
+     nudges Firestore to reconnect right away instead of waiting for it
+     to notice on its own. */
+  useEffect(() => {
+    const goOnline = () => setIsOnline(true);
+    const goOffline = () => setIsOnline(false);
+    window.addEventListener("online", goOnline);
+    window.addEventListener("offline", goOffline);
+    return () => {
+      window.removeEventListener("online", goOnline);
+      window.removeEventListener("offline", goOffline);
+    };
+  }, []);
+
+  const syncNow = () => {
+    if (!db) return;
+    enableNetwork(db).then(() => say("Synced")).catch(() => say("Couldn't sync — try again", true));
   };
 
   /* Race Tracker is home. Dashboard and Racer profiles are pushed on top of
@@ -905,19 +927,9 @@ function App() {
     return patchRacer(r.id, { entries: [], targetDate: "", cadence: "every:1" });
   };
 
-  /* setting your own goal (rather than 0/blank, which means "use the race's
-     shared goal") is warned first, since it takes you off the same target
-     as everyone else — reverting back to the shared goal needs no warning */
-  const setGoal = async (r, newGoal) => {
-    const shared = Number(race.goal) || 0;
-    if (newGoal > 0 && newGoal !== shared) {
-      if (!(await askConfirm(
-        "Setting your own goal means you won't be saving toward the same amount as everyone else in this race anymore. Continue?",
-        { okLabel: "Set my own goal" }
-      ))) return;
-    }
-    return patchRacer(r.id, { goal: newGoal });
-  };
+  /* GoalEditor already shows the "you'll differ from everyone else"
+     warning every time it's opened, so this just saves */
+  const setGoal = (r, newGoal) => patchRacer(r.id, { goal: newGoal });
 
   /* target date / cadence change → (re)build the planned, uncheck-yet entries for the remaining balance.
      every installment is a whole number, and the last one absorbs whatever rounding left over so the
@@ -1003,6 +1015,9 @@ function App() {
             onCommit=${(v) => patchRace({ tripName: v })} />
           <span class="trip-name-wrap__pencil" aria-hidden="true">✎</span>
         </div>
+        ${!isOnline
+          ? html`<span class="syncbadge syncbadge--off">Offline</span>`
+          : html`<button class="syncbadge syncbadge--on" onClick=${syncNow}>⟳ Sync</button>`}
       </header>
 
       <div ref=${tabContentRef}
@@ -1734,26 +1749,41 @@ function SavingsPlanHint({ r, cur, target, cadence, remaining }) {
 }
 
 /* editable only by the racer it belongs to. 0/blank means "use the race's
-   shared goal" — going back to that needs no warning, only diverging from
-   it does, since that's the part that changes what the racer is racing to. */
-function GoalEditor({ value, sharedGoal, onCommit }) {
-  const [draft, setDraft] = useState(String(value || ""));
+   shared goal". Tapping the pencil always shows the warning first — every
+   time, not just when the number actually ends up different — since
+   editing your goal at all is the thing worth flagging. */
+function GoalEditor({ value, sharedGoal, cur, onCommit }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const effective = value > 0 ? value : sharedGoal;
   const custom = value > 0 && value !== sharedGoal;
 
-  const commit = () => {
+  const openEditor = () => { setDraft(String(effective)); setEditing(true); };
+  const save = () => {
     const num = Math.round(Number(draft)) || 0;
-    if (num === (value || 0)) return;
-    onCommit(num);
+    setEditing(false);
+    if (num !== (value || 0)) onCommit(num);
   };
 
   return html`
     <div style="display:flex;align-items:center;gap:8px;justify-content:flex-end">
       ${custom && html`<span class="goaleditor__tag">Custom</span>`}
-      <input class="field field--mono" style="width:110px;text-align:right" inputmode="numeric" value=${draft}
-        aria-label="Your goal"
-        onInput=${(e) => setDraft(e.target.value)}
-        onBlur=${commit}
-        onKeyDown=${(e) => { if (e.key === "Enter") e.target.blur(); }} />
+      <span>${money(effective, cur)}</span>
+      <button class="goaleditor__pencil" onClick=${openEditor} aria-label="Edit your goal">✎</button>
+
+      ${editing && html`
+        <div class="modal-overlay" onClick=${(e) => { if (e.target === e.currentTarget) setEditing(false); }}>
+          <div class="modal" style="max-width:320px">
+            <p class="modal__msg">Changing your goal means you won't be saving toward the same amount as everyone else in this race.</p>
+            <input class="field field--mono" inputmode="numeric" value=${draft}
+              aria-label="Your goal" onInput=${(e) => setDraft(e.target.value)}
+              onKeyDown=${(e) => e.key === "Enter" && save()} />
+            <div class="modal__actions" style="margin-top:16px">
+              <button class="btn btn--ghost" onClick=${() => setEditing(false)}>Cancel</button>
+              <button class="btn btn--go" onClick=${save}>Save</button>
+            </div>
+          </div>
+        </div>`}
     </div>`;
 }
 
@@ -1789,7 +1819,7 @@ function RacerDetailPage({ r, race, cur, isOwner, onBack, onAddEntry, onToggleEn
               <tr><td class="stattable__label">Bank / Wallet</td><td class="stattable__value">${r.bank || "—"}</td></tr>
               <tr><td class="stattable__label">Goal</td><td class="stattable__value">
                 ${isOwner
-                  ? html`<${GoalEditor} value=${r.goal || 0} sharedGoal=${Number(race.goal) || 0} onCommit=${onSetGoal} />`
+                  ? html`<${GoalEditor} value=${r.goal || 0} sharedGoal=${Number(race.goal) || 0} cur=${cur} onCommit=${onSetGoal} />`
                   : money(r.effectiveGoal, cur)}
               </td></tr>
               <tr><td class="stattable__label">Amount Saved</td><td class="stattable__value">${money(r.saved, cur)}</td></tr>
