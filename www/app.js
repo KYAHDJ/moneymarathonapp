@@ -122,20 +122,21 @@ const DEFAULT_CHARACTERS = [
   },
 ];
 
+/* three real preset choices — primary/secondary/tertiary, genuinely
+   different hues, not just shades of the same green — plus Auto and Custom.
+   c3-c5 aren't offered here but still exist for the auto-cycle below,
+   so racers who don't pick anything still get variety past six lanes. */
 const PROFILE_COLORS = [
   { id: "", label: "Auto-pick color" },
-  { id: "c0", label: "Seafoam" },
-  { id: "c1", label: "Mint" },
-  { id: "c2", label: "Sage" },
-  { id: "c3", label: "Jade" },
-  { id: "c4", label: "Pine" },
-  { id: "c5", label: "Moss" },
+  { id: "c0", label: "Primary" },
+  { id: "c1", label: "Secondary" },
+  { id: "c2", label: "Tertiary" },
 ];
 
 /* hex equivalents of the c0-c5 lane presets (must match styles.css), so a
    preset pick can also fill the color box solid like a custom hex does */
 const LANE_PRESET_FILLS = {
-  c0: "#EAF8F1", c1: "#D6EEE2", c2: "#9CDAC1", c3: "#73D1AB", c4: "#55B890", c5: "#3E9678",
+  c0: "#55B890", c1: "#E8768F", c2: "#E8A33D", c3: "#6FA8DC", c4: "#B39DDB", c5: "#D08860",
 };
 
 const CURRENCIES = [
@@ -570,9 +571,11 @@ function App() {
   const prevRacersRef = useRef(null);
   const splashStarted = useRef(false);
 
+  /* warnings/errors stay up longer — a good-news toast can flash by,
+     but "it timed out, try again" needs enough time to actually read */
   const say = (msg, bad = false) => {
     setToast({ msg, bad });
-    setTimeout(() => setToast(null), 2800);
+    setTimeout(() => setToast(null), bad ? 5000 : 2800);
   };
 
   /* Race Tracker is home. Dashboard and Racer profiles are pushed on top of
