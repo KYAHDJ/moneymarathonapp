@@ -98,7 +98,7 @@ const contrastOn = (hex) => {
    --lane-contrast exists only so text drawn on top of the fill stays legible */
 const laneStyle = (r) =>
   isHexColor(r.color)
-    ? `--lane-fill:${r.color};--lane-ink:${r.color};--lane-contrast:${contrastOn(r.color)};`
+    ? `--lane-fill:${r.color};--lane-ink:${r.color};--lane-contrast:${contrastOn(r.color)};--lane-ink-text:${contrastOn(r.color)};`
     : "";
 
 const DEFAULT_CHARACTERS = [
@@ -584,11 +584,11 @@ function App() {
 
   /* offline is fine — the local cache still shows everything and edits
      still save locally, they just queue until a connection comes back.
-     This only tracks whether there's a network path at all; tapping Sync
-     nudges Firestore to reconnect right away instead of waiting for it
-     to notice on its own. */
+     The moment the browser sees a connection again, nudge Firestore to
+     reconnect right away instead of waiting for it to notice on its own —
+     that's the "auto sync," no button for the person to remember to tap. */
   useEffect(() => {
-    const goOnline = () => setIsOnline(true);
+    const goOnline = () => { setIsOnline(true); if (db) enableNetwork(db).catch(() => {}); };
     const goOffline = () => setIsOnline(false);
     window.addEventListener("online", goOnline);
     window.addEventListener("offline", goOffline);
@@ -597,11 +597,6 @@ function App() {
       window.removeEventListener("offline", goOffline);
     };
   }, []);
-
-  const syncNow = () => {
-    if (!db) return;
-    enableNetwork(db).then(() => say("Synced")).catch(() => say("Couldn't sync — try again", true));
-  };
 
   /* Race Tracker is home. Dashboard and Racer profiles are pushed on top of
      it as their own full screens — entering "grows" from wherever the
@@ -1015,10 +1010,12 @@ function App() {
             onCommit=${(v) => patchRace({ tripName: v })} />
           <span class="trip-name-wrap__pencil" aria-hidden="true">✎</span>
         </div>
-        ${!isOnline
-          ? html`<span class="syncbadge syncbadge--off">Offline</span>`
-          : html`<button class="syncbadge syncbadge--on" onClick=${syncNow}>⟳ Sync</button>`}
       </header>
+
+      <span class=${"syncsign " + (isOnline ? "syncsign--on" : "syncsign--off")}
+        title=${isOnline ? "Synced automatically" : "Offline — changes will sync once reconnected"}>
+        ${isOnline ? "⟳" : "⚠"}
+      </span>
 
       <div ref=${tabContentRef}
         class=${"tab-content" + ((tabEntering || tabLeaving) ? " tab-content--entering" : "")}
