@@ -41,6 +41,9 @@ const compact = (n, cur = "₱") => {
   return money(n, cur);
 };
 
+/* a racer's own goal if they've set one, otherwise the race's shared goal */
+const racerGoal = (r, race) => (r.goal && Number(r.goal) > 0 ? Number(r.goal) : Number(race?.goal) || 0);
+
 const today = () => new Date().toISOString().slice(0, 10);
 
 const prettyDate = (iso) => {
@@ -902,11 +905,25 @@ function App() {
     return patchRacer(r.id, { entries: [], targetDate: "", cadence: "every:1" });
   };
 
+  /* setting your own goal (rather than 0/blank, which means "use the race's
+     shared goal") is warned first, since it takes you off the same target
+     as everyone else — reverting back to the shared goal needs no warning */
+  const setGoal = async (r, newGoal) => {
+    const shared = Number(race.goal) || 0;
+    if (newGoal > 0 && newGoal !== shared) {
+      if (!(await askConfirm(
+        "Setting your own goal means you won't be saving toward the same amount as everyone else in this race anymore. Continue?",
+        { okLabel: "Set my own goal" }
+      ))) return;
+    }
+    return patchRacer(r.id, { goal: newGoal });
+  };
+
   /* target date / cadence change → (re)build the planned, uncheck-yet entries for the remaining balance.
      every installment is a whole number, and the last one absorbs whatever rounding left over so the
      total lands exactly on the remaining balance — never over, never under. */
   const applySavingsPlan = (r, targetDate, cadence) => {
-    const remaining = Math.max(0, Math.round((Number(race.goal) || 0) - r.saved));
+    const remaining = Math.max(0, Math.round(racerGoal(r, race) - r.saved));
     const keep = (r.entries || []).filter((e) => !(e.source === "plan" && !e.confirmed));
     const patch = { targetDate, cadence };
     if (targetDate && remaining > 0) {
@@ -934,8 +951,9 @@ function App() {
       const entries = r.entries || [];
       const saved = entries.filter((e) => e.confirmed).reduce((s, e) => s + Number(e.amount || 0), 0);
       const planned = entries.filter((e) => !e.confirmed).reduce((s, e) => s + Number(e.amount || 0), 0);
-      const pct = goal > 0 ? saved / goal : 0;
-      return { ...r, slot: i + 1, saved, planned, pct, home: pct >= 1 };
+      const effectiveGoal = racerGoal(r, race);
+      const pct = effectiveGoal > 0 ? saved / effectiveGoal : 0;
+      return { ...r, slot: i + 1, saved, planned, effectiveGoal, pct, home: pct >= 1 };
     });
     const named = base.filter((r) => (r.name || "").trim());
     [...named]
@@ -1015,7 +1033,8 @@ function App() {
                     onRemoveEntry=${(eid) => removeEntry(activeRow, eid)}
                     onEditAmount=${(eid, amt) => editEntryAmount(activeRow, eid, amt)}
                     onApplyPlan=${(t, c) => applySavingsPlan(activeRow, t, c)}
-                    onClearLog=${() => clearLog(activeRow)} />`
+                    onClearLog=${() => clearLog(activeRow)}
+                    onSetGoal=${(g) => setGoal(activeRow, g)} />`
                 : html`<div class="tab-panel"><div class="empty">This racer was removed.</div>
                     <button class="btn" onClick=${() => setDetailRacerId(null)}>← Back</button></div>`)
             : html`
@@ -1235,6 +1254,7 @@ function HomeTab({ race, cur, rows, isAdmin, onPatchRace, onPatchRacer, onAddRac
               value=${race.goal} inputmode="numeric" aria-label="Goal per person"
               onCommit=${(v) => onPatchRace({ goal: Math.round(Number(v)) || 0 })} />
           </div>
+          <p class="goalcard__hint">Anyone can set their own goal from their own profile instead</p>
         </div>
       </section>
 
@@ -1713,11 +1733,35 @@ function SavingsPlanHint({ r, cur, target, cadence, remaining }) {
     </p>`;
 }
 
-function RacerDetailPage({ r, race, cur, isOwner, onBack, onAddEntry, onToggleEntry, onRemoveEntry, onEditAmount, onApplyPlan, onClearLog }) {
+/* editable only by the racer it belongs to. 0/blank means "use the race's
+   shared goal" — going back to that needs no warning, only diverging from
+   it does, since that's the part that changes what the racer is racing to. */
+function GoalEditor({ value, sharedGoal, onCommit }) {
+  const [draft, setDraft] = useState(String(value || ""));
+  const custom = value > 0 && value !== sharedGoal;
+
+  const commit = () => {
+    const num = Math.round(Number(draft)) || 0;
+    if (num === (value || 0)) return;
+    onCommit(num);
+  };
+
+  return html`
+    <div style="display:flex;align-items:center;gap:8px;justify-content:flex-end">
+      ${custom && html`<span class="goaleditor__tag">Custom</span>`}
+      <input class="field field--mono" style="width:110px;text-align:right" inputmode="numeric" value=${draft}
+        aria-label="Your goal"
+        onInput=${(e) => setDraft(e.target.value)}
+        onBlur=${commit}
+        onKeyDown=${(e) => { if (e.key === "Enter") e.target.blur(); }} />
+    </div>`;
+}
+
+function RacerDetailPage({ r, race, cur, isOwner, onBack, onAddEntry, onToggleEntry, onRemoveEntry, onEditAmount, onApplyPlan, onClearLog, onSetGoal }) {
   const [amount, setAmount] = useState("");
   const [date, setDate] = useState(today());
 
-  const remaining = Math.max(0, (Number(race.goal) || 0) - r.saved);
+  const remaining = Math.max(0, r.effectiveGoal - r.saved);
   const cadence = r.cadence || "every:1";
   const target = r.targetDate || "";
   const entries = [...(r.entries || [])].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
@@ -1743,7 +1787,11 @@ function RacerDetailPage({ r, race, cur, isOwner, onBack, onAddEntry, onToggleEn
           <table class="stattable" ref=${registerTarget("profile_stats")}>
             <tbody>
               <tr><td class="stattable__label">Bank / Wallet</td><td class="stattable__value">${r.bank || "—"}</td></tr>
-              <tr><td class="stattable__label">Goal</td><td class="stattable__value">${money(Number(race.goal) || 0, cur)}</td></tr>
+              <tr><td class="stattable__label">Goal</td><td class="stattable__value">
+                ${isOwner
+                  ? html`<${GoalEditor} value=${r.goal || 0} sharedGoal=${Number(race.goal) || 0} onCommit=${onSetGoal} />`
+                  : money(r.effectiveGoal, cur)}
+              </td></tr>
               <tr><td class="stattable__label">Amount Saved</td><td class="stattable__value">${money(r.saved, cur)}</td></tr>
               <tr><td class="stattable__label">Remaining Balance</td><td class="stattable__value">${money(remaining, cur)}</td></tr>
               <tr class="stattable__pctrow"><td colspan="2">Progress Bar — ${Math.round(r.pct * 100)}%</td></tr>
