@@ -36,14 +36,13 @@
   color-scheme: light;
 }
 
-/* six lane colours — c0-c2 are the named Primary/Secondary/Tertiary presets,
-   c3-c5 are extra auto-cycle-only variety for racers past the third lane */
-.lane--c0, .avatar--c0 { --lane-fill: #55B890; --lane-ink: #FFFFFF; }
-.lane--c1, .avatar--c1 { --lane-fill: #E8768F; --lane-ink: #7A2740; }
-.lane--c2, .avatar--c2 { --lane-fill: #E8A33D; --lane-ink: #6B4A0F; }
-.lane--c3, .avatar--c3 { --lane-fill: #6FA8DC; --lane-ink: #1B4468; }
-.lane--c4, .avatar--c4 { --lane-fill: #B39DDB; --lane-ink: #4A3B6B; }
-.lane--c5, .avatar--c5 { --lane-fill: #D08860; --lane-ink: #6B3A1F; }
+/* six lane colours — Red, Orange, Yellow, Green, Blue, Violet */
+.lane--c0, .avatar--c0 { --lane-fill: #E85D5D; --lane-ink: #FFFFFF; }
+.lane--c1, .avatar--c1 { --lane-fill: #E8923D; --lane-ink: #6B3F0F; }
+.lane--c2, .avatar--c2 { --lane-fill: #E8D23D; --lane-ink: #6B5D0F; }
+.lane--c3, .avatar--c3 { --lane-fill: #5DB88A; --lane-ink: #FFFFFF; }
+.lane--c4, .avatar--c4 { --lane-fill: #5D8FE8; --lane-ink: #FFFFFF; }
+.lane--c5, .avatar--c5 { --lane-fill: #9B6FD9; --lane-ink: #FFFFFF; }
 
 * { box-sizing: border-box; }
 
@@ -202,6 +201,26 @@ input, select { font-family: inherit; }
 /* ---------- tabs — two big buttons, not an underlined strip ---------- */
 
 .hero { margin-top: 18px; }
+
+.adminlock {
+  background: var(--grid-soft);
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-dim);
+  text-align: center;
+  margin-bottom: 16px;
+}
+.adminlock__area { opacity: 0.55; pointer-events: none; filter: grayscale(0.3); }
+
+.pooledtotal {
+  text-align: center;
+  font-size: 15px;
+  color: var(--ink-dim);
+  margin: 0 0 16px;
+}
+.pooledtotal b { color: var(--ink); font-family: var(--mono); font-weight: 700; }
 
 /* fixed to the bottom of the viewport, only shown on Race Tracker — it
    doesn't scroll away with the page content */
@@ -572,10 +591,14 @@ input, select { font-family: inherit; }
   pointer-events: none;
 }
 
-.strip__wake {
+/* progress deepens the lane's own color instead of washing it out white —
+   multiply blend darkens whatever's underneath while keeping its hue, so
+   it works the same whether that lane's ink happens to be light or dark */
+.strip__fill {
   position: absolute;
   left: 0; top: 0; bottom: 0;
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.55));
+  background: rgba(0, 0, 0, 0.16);
+  mix-blend-mode: multiply;
   transition: width 0.9s cubic-bezier(0.22, 0.9, 0.28, 1);
 }
 

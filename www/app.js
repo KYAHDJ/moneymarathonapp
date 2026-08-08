@@ -122,21 +122,21 @@ const DEFAULT_CHARACTERS = [
   },
 ];
 
-/* three real preset choices — primary/secondary/tertiary, genuinely
-   different hues, not just shades of the same green — plus Auto and Custom.
-   c3-c5 aren't offered here but still exist for the auto-cycle below,
-   so racers who don't pick anything still get variety past six lanes. */
+/* six actual named colors off the color wheel — plus Auto and Custom */
 const PROFILE_COLORS = [
   { id: "", label: "Auto-pick color" },
-  { id: "c0", label: "Primary" },
-  { id: "c1", label: "Secondary" },
-  { id: "c2", label: "Tertiary" },
+  { id: "c0", label: "Red" },
+  { id: "c1", label: "Orange" },
+  { id: "c2", label: "Yellow" },
+  { id: "c3", label: "Green" },
+  { id: "c4", label: "Blue" },
+  { id: "c5", label: "Violet" },
 ];
 
 /* hex equivalents of the c0-c5 lane presets (must match styles.css), so a
    preset pick can also fill the color box solid like a custom hex does */
 const LANE_PRESET_FILLS = {
-  c0: "#55B890", c1: "#E8768F", c2: "#E8A33D", c3: "#6FA8DC", c4: "#B39DDB", c5: "#D08860",
+  c0: "#E85D5D", c1: "#E8923D", c2: "#E8D23D", c3: "#5DB88A", c4: "#5D8FE8", c5: "#9B6FD9",
 };
 
 const CURRENCIES = [
@@ -806,6 +806,7 @@ function App() {
             goal: 20000,
             currency: "₱",
             characters: DEFAULT_CHARACTERS,
+            hostRacerId: racerId,
             createdAt: serverTimestamp(),
           }),
           setDoc(racerRef(id, racerId), {
@@ -948,6 +949,15 @@ function App() {
   const leader = rows.find((r) => r.rank === 1);
   const activeRow = detailRacerId ? rows.find((x) => x.id === detailRacerId) : null;
 
+  /* whoever created the race is the host — only they can touch race setup,
+     the racer list, and the character library; everyone else's own profile
+     page is still theirs to edit. Races from before hostRacerId existed
+     fall back to whoever has order 0, same racer createRace always used. */
+  const myRacerId = raceId ? localStorage.getItem(lsRacer(raceId)) : null;
+  const hostRacerId = (race && race !== "missing" && race.hostRacerId)
+    || [...rows].sort((a, b) => (a.order || 0) - (b.order || 0))[0]?.id;
+  const isAdmin = !!myRacerId && myRacerId === hostRacerId;
+
   /* ---------- screens ---------- */
 
   if (!configured) return html`<${SetupGate} />`;
@@ -982,12 +992,12 @@ function App() {
         style=${`transform-origin:${tabOrigin}`}
         onPointerDown=${onSwipeDown} onPointerUp=${onSwipeUp}>
 
-        ${tab === "track" && html`<${RaceHero} race=${race} rows=${rows} cur=${cur} />`}
+        ${tab === "track" && html`<${RaceHero} race=${race} rows=${rows} cur=${cur} pooled=${pooled} />`}
 
         ${tab === "dashboard" && html`
           <button class="backbtn" onClick=${goBack}>← Back</button>
           <${HomeTab}
-            race=${race} cur=${cur} rows=${rows}
+            race=${race} cur=${cur} rows=${rows} isAdmin=${isAdmin}
             onPatchRace=${patchRace}
             onPatchRacer=${patchRacer}
             onAddRacer=${addRacer}
@@ -998,6 +1008,7 @@ function App() {
           detailRacerId
             ? (activeRow
                 ? html`<${RacerDetailPage} r=${activeRow} race=${race} cur=${cur}
+                    isOwner=${activeRow.id === myRacerId}
                     onBack=${() => setDetailRacerId(null)}
                     onAddEntry=${(e) => addEntry(activeRow, e)}
                     onToggleEntry=${(eid) => toggleEntry(activeRow, eid)}
@@ -1055,9 +1066,11 @@ function TabNav({ onChange }) {
 
 /* ---------- RACE TRACKER (home) — podium + track ---------- */
 
-function RaceHero({ race, rows, cur }) {
+function RaceHero({ race, rows, cur, pooled }) {
   return html`
     <div class="hero">
+      <p class="pooledtotal">Pooled so far: <b>${money(pooled, cur)}</b></p>
+
       <section class="section">
         <div class="podium" ref=${registerTarget("podium")}>
           ${[1, 2, 3].map((n) => {
@@ -1112,7 +1125,7 @@ function Lane({ r, race, cur }) {
       </div>
       <div class="lane__body">
         <div class="strip">
-          <div class="strip__wake" style=${`width:${shown * 100}%`}></div>
+          <div class="strip__fill" style=${`width:${shown * 100}%`}></div>
           <div class="racer-sprite ${src ? "" : "racer-sprite--blank"}" style=${`left:${left}%`}>
             ${src
               ? html`<img src=${src} alt="" loading="lazy" />`
@@ -1126,7 +1139,7 @@ function Lane({ r, race, cur }) {
 
 /* ---------- HOME TAB — setup, racers, characters, leave ---------- */
 
-function HomeTab({ race, cur, rows, onPatchRace, onPatchRacer, onAddRacer, onRemoveRacer, say }) {
+function HomeTab({ race, cur, rows, isAdmin, onPatchRace, onPatchRacer, onAddRacer, onRemoveRacer, say }) {
   const [form, setForm] = useState({ name: "", start: "", moving: "", finish: "" });
   const [uploading, setUploading] = useState({});
   const [cropTarget, setCropTarget] = useState(null);
@@ -1209,6 +1222,8 @@ function HomeTab({ race, cur, rows, onPatchRace, onPatchRacer, onAddRacer, onRem
 
   return html`
     <div class="tab-panel">
+      ${!isAdmin && html`<p class="adminlock">Only the race host can edit this — you're all set on your own profile.</p>`}
+      <div class=${isAdmin ? "" : "adminlock__area"}>
       <section class="section">
         <div class="goalcard" ref=${registerTarget("currency")}>
           <p class="goalcard__label">Goal per person</p>
@@ -1287,6 +1302,7 @@ function HomeTab({ race, cur, rows, onPatchRace, onPatchRacer, onAddRacer, onRem
             : html`<button class="btn btn--go" onClick=${() => setAddingCharacter(true)}>+ Add character</button>`}
         </div>
       </section>
+      </div>
 
       ${cropTarget && html`<${ImageCropModal} file=${cropTarget.file}
         onCancel=${() => setCropTarget(null)} onSave=${handleCropSave} />`}
@@ -1696,7 +1712,7 @@ function SavingsPlanHint({ r, cur, target, cadence, remaining }) {
     </p>`;
 }
 
-function RacerDetailPage({ r, race, cur, onBack, onAddEntry, onToggleEntry, onRemoveEntry, onEditAmount, onApplyPlan, onClearLog }) {
+function RacerDetailPage({ r, race, cur, isOwner, onBack, onAddEntry, onToggleEntry, onRemoveEntry, onEditAmount, onApplyPlan, onClearLog }) {
   const [amount, setAmount] = useState("");
   const [date, setDate] = useState(today());
 
@@ -1734,6 +1750,8 @@ function RacerDetailPage({ r, race, cur, onBack, onAddEntry, onToggleEntry, onRe
           </table>
           <div class="bar detailcard__bar"><div class="bar__fill" style=${`width:${Math.min(100, r.pct * 100)}%`}></div></div>
 
+          ${!isOwner && html`<p class="adminlock" style="margin-top:16px">This is ${r.name}'s profile — only they can log or edit their savings.</p>`}
+          <div class=${isOwner ? "" : "adminlock__area"}>
           <div class="plan" ref=${registerTarget("profile_plan")}>
             <div class="plan__row">
               <span class="plan__label">Save by</span>
@@ -1773,6 +1791,7 @@ function RacerDetailPage({ r, race, cur, onBack, onAddEntry, onToggleEntry, onRe
             <input class="field field--mono" type="date" value=${date} onInput=${(e) => setDate(e.target.value)} />
             <button class="btn btn--go btn--sm" onClick=${submit} disabled=${!Number(amount)}>Add</button>
             <button class="btn btn--sm btn--danger-outline" onClick=${onClearLog}>Clear log</button>
+          </div>
           </div>
         </div>
       </div>
