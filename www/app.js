@@ -15,7 +15,7 @@ import {
 import {
   initializeFirestore, persistentLocalCache, persistentSingleTabManager,
   doc, collection, query, orderBy, onSnapshot, enableNetwork,
-  setDoc, updateDoc, deleteDoc, getDoc, getDocs, serverTimestamp,
+  setDoc, updateDoc, deleteDoc, getDoc, getDocs, serverTimestamp, increment,
 } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js";
 import {
   getStorage, ref as storageRef, uploadBytes, getDownloadURL,
@@ -46,6 +46,7 @@ const racerGoal = (r, race) => (r.goal && Number(r.goal) > 0 ? Number(r.goal) : 
 /* same fallback pattern as racerGoal — a shared default everyone starts
    with, freely overridden per-racer from their own profile */
 const racerTargetDate = (r, race) => r.targetDate || race?.targetDate || "";
+const racerCadence = (r, race) => r.cadence || race?.cadence || "every:1";
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -596,6 +597,13 @@ function App() {
   }));
   const [showSound, setShowSound] = useState(false);
   const [congrats, setCongrats] = useState(null);
+  /* navigator.onLine only tells you the device HAS a network interface up —
+     it stays true on a dead wifi or a captive portal. Whether Firestore's
+     snapshots are actually coming from the server (vs its local cache) is
+     the real signal, and the only one that stays honest on a slow connection. */
+  const [firestoreOnline, setFirestoreOnline] = useState(true);
+  const [showSyncModal, setShowSyncModal] = useState(false);
+  const wasOfflineRef = useRef(false);
   const prevHomeRef = useRef({ id: null, home: null });
   const prevRacersRef = useRef(null);
   const selfLeavingRef = useRef(false);
@@ -739,16 +747,20 @@ function App() {
     let stopRacers = () => {};
     const stopRace = onSnapshot(
       raceRef(raceId),
+      { includeMetadataChanges: true },
       (snap) => {
         if (!snap.exists()) { setRace("missing"); return; }
         setRace({ id: snap.id, ...snap.data() });
         setStatus("live");
+        setFirestoreOnline(!snap.metadata.fromCache);
       },
-      (err) => { setStatus("off"); say(err.message, true); }
+      (err) => { setStatus("off"); setFirestoreOnline(false); say(err.message, true); }
     );
     stopRacers = onSnapshot(
       query(racersRef(raceId), orderBy("order")),
+      { includeMetadataChanges: true },
       (snap) => {
+        setFirestoreOnline(!snap.metadata.fromCache);
         const next = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
         const prev = prevRacersRef.current;
         const myId = localStorage.getItem(lsRacer(raceId));
@@ -793,10 +805,24 @@ function App() {
         prevRacersRef.current = next;
         setRacers(next);
       },
-      (err) => { setStatus("off"); say(err.message, true); }
+      (err) => { setStatus("off"); setFirestoreOnline(false); say(err.message, true); }
     );
     return () => { stopRace(); stopRacers(); };
   }, [raceId, authed]);
+
+  const reallyOnline = isOnline && firestoreOnline;
+
+  /* once we come back from actually being offline (not just a blip),
+     let the person know their queued changes are syncing — Firestore
+     flushes them automatically, this is just so nobody wonders if their
+     offline logging actually made it */
+  useEffect(() => {
+    if (!reallyOnline) { wasOfflineRef.current = true; return; }
+    if (wasOfflineRef.current) {
+      wasOfflineRef.current = false;
+      setShowSyncModal(true);
+    }
+  }, [reallyOnline]);
 
   /* keep this device's savings-day reminders in lockstep with its own
      racer's plan — re-derive a signature so this only re-syncs when the
@@ -946,15 +972,21 @@ function App() {
     if (!(await askConfirm("Leave this race? You'll be removed from the track — everyone else keeps racing.", { okLabel: "Yes, leave" }))) return;
     selfLeavingRef.current = true;
     const myRacerId = localStorage.getItem(lsRacer(raceId));
-    /* the host leaving hands admin to whoever joined next — the race
-       shouldn't end up with no one able to touch its setup */
-    if (myRacerId && race && race !== "missing" && race.hostRacerId === myRacerId) {
-      const next = [...rows]
-        .filter((r) => r.id !== myRacerId)
-        .sort((a, b) => (a.order || 0) - (b.order || 0))[0];
-      if (next) await guard(updateDoc(raceRef(raceId), { hostRacerId: next.id }));
+    const others = rows.filter((r) => r.id !== myRacerId);
+    if (others.length === 0) {
+      /* the last racer leaving takes the whole race with them — an empty
+         race with nobody in it has nothing left to track */
+      if (myRacerId) await guard(deleteDoc(racerRef(raceId, myRacerId)));
+      await guard(deleteDoc(raceRef(raceId)));
+    } else {
+      /* the host leaving hands admin to whoever joined next — the race
+         shouldn't end up with no one able to touch its setup */
+      if (myRacerId && race && race !== "missing" && race.hostRacerId === myRacerId) {
+        const next = [...others].sort((a, b) => (a.order || 0) - (b.order || 0))[0];
+        if (next) await guard(updateDoc(raceRef(raceId), { hostRacerId: next.id }));
+      }
+      if (myRacerId) await guard(deleteDoc(racerRef(raceId, myRacerId)));
     }
-    if (myRacerId) await guard(deleteDoc(racerRef(raceId, myRacerId)));
     localStorage.removeItem(LS_RACE);
     localStorage.removeItem(lsRacer(raceId));
     await cancelAllSavingsReminders();
@@ -984,14 +1016,17 @@ function App() {
     }));
   };
 
-  /* only the true host can kick a racer who joined on their own — a
-     co-editor granted Dashboard access still can't remove someone else's
-     joined lane, only lanes the host added that nobody's claimed */
+  /* removing/kicking is host-only, full stop — a co-editor with delegated
+     Dashboard access can edit goals, the racer list's details, etc, but
+     never removes anyone, so there's no confusing "works for some racers
+     but not others" behavior */
   const removeRacer = async (r) => {
-    if (r.joinedSelf && !isAdmin) { say(`${r.name || "This racer"} joined on their own — only the host can remove them.`, true); return; }
+    if (!isAdmin) { say("Only the race host can remove racers.", true); return; }
     const verb = r.joinedSelf ? "Kick" : "Remove";
     if (!(await askConfirm(`${verb} ${r.name || "this racer"} and erase their whole savings log? This can't be undone.`, { okLabel: `Yes, ${verb.toLowerCase()}` }))) return;
-    return guard(deleteDoc(racerRef(raceId, r.id)));
+    await guard(deleteDoc(racerRef(raceId, r.id)));
+    /* a race nobody's left in shouldn't just sit there forever */
+    if (rows.filter((x) => x.id !== r.id).length === 0) await guard(deleteDoc(raceRef(raceId)));
   };
 
   /* records the moment a racer first reaches their goal — used to break
@@ -1034,11 +1069,22 @@ function App() {
 
   /* target date / cadence change → (re)build the planned, uncheck-yet entries for the remaining balance.
      every installment is a whole number, and the last one absorbs whatever rounding left over so the
-     total lands exactly on the remaining balance — never over, never under. */
+     total lands exactly on the remaining balance — never over, never under.
+     scheduleCustom tracks whether this landed on something DIFFERENT from the
+     race's current shared default — if it matches exactly (including a plain
+     "yes, sync me to the new schedule" from the pending-adjustment prompt),
+     they're still considered "on the shared default" and stay eligible for
+     future auto-adjust prompts; only an actual divergence opts them out. */
   const applySavingsPlan = (r, targetDate, cadence) => {
     const remaining = Math.max(0, Math.round(racerGoal(r, race) - r.saved));
     const keep = (r.entries || []).filter((e) => !(e.source === "plan" && !e.confirmed));
-    const patch = { targetDate, cadence };
+    const sharedTarget = race?.targetDate || "";
+    const sharedCadence = race?.cadence || "every:1";
+    const patch = {
+      targetDate, cadence,
+      scheduleCustom: targetDate !== sharedTarget || cadence !== sharedCadence,
+      scheduleAckVersion: Number(race?.scheduleVersion) || 0,
+    };
     if (targetDate && remaining > 0) {
       const dates = scheduleDates(targetDate, cadence);
       const per = dates.length ? Math.round(remaining / dates.length) : 0;
@@ -1136,14 +1182,29 @@ function App() {
     if (decision === "reset") {
       if (!(await askConfirm("Start a new race? Every racer's savings log will be wiped and everyone starts fresh toward the same goal.", { okLabel: "Yes, start new race" }))) return;
       await Promise.all(namedRows.map((r) =>
-        guard(updateDoc(racerRef(raceId, r.id), { entries: [], targetDate: "", cadence: "every:1", finishedAt: null, finalVote: null }))
+        guard(updateDoc(racerRef(raceId, r.id), {
+          entries: [], targetDate: "", cadence: "every:1", finishedAt: null, finalVote: null,
+          scheduleCustom: false, scheduleAckVersion: 0,
+        }))
       ));
-      await guard(updateDoc(raceRef(raceId), { raceResolved: false }));
+      await guard(updateDoc(raceRef(raceId), { raceResolved: false, scheduleVersion: 0 }));
     } else {
       await Promise.all(namedRows.map((r) => guard(updateDoc(racerRef(raceId, r.id), { finalVote: null }))));
       await guard(updateDoc(raceRef(raceId), { raceResolved: true }));
     }
   };
+
+  /* a racer with an existing plan is one who, at some point, actually
+     generated entries from a save-by/cadence schedule — a brand new joiner
+     who's never touched either just sees the current shared default
+     pre-filled next time they open their profile, nothing to "ask" them */
+  const hasExistingPlan = (r) => (r?.entries || []).some((e) => e.source === "plan");
+  const pendingScheduleSync = !!myRacer && !myRacer.scheduleCustom && hasExistingPlan(myRacer)
+    && race && race !== "missing"
+    && (Number(race.scheduleVersion) || 0) > (Number(myRacer.scheduleAckVersion) || 0);
+
+  const acceptScheduleSync = () => applySavingsPlan(myRacer, race.targetDate || "", race.cadence || "every:1");
+  const declineScheduleSync = () => patchRacer(myRacer.id, { scheduleAckVersion: Number(race.scheduleVersion) || 0 });
 
   /* ---------- screens ---------- */
 
@@ -1159,7 +1220,8 @@ function App() {
   if (!race) return html`<${SplashScreen} out=${false} />`;
 
   return html`
-    <div class="shell">
+    <div class=${"shell" + (reallyOnline ? "" : " shell--offline")}>
+      ${!reallyOnline && html`<div class="offlinebar">⚠ You're offline — changes will sync once you're back online</div>`}
       <div style="height:env(safe-area-inset-top, 0px)"></div>
 
       <header class="masthead">
@@ -1174,9 +1236,9 @@ function App() {
         </div>
       </header>
 
-      <span class=${"syncsign " + (isOnline ? "syncsign--on" : "syncsign--off")}
-        title=${isOnline ? "Synced automatically" : "Offline — changes will sync once reconnected"}>
-        ${isOnline ? "⟳" : "⚠"}
+      <span class=${"syncsign " + (reallyOnline ? "syncsign--on" : "syncsign--off")}
+        title=${reallyOnline ? "Synced automatically" : "Offline — changes will sync once reconnected"}>
+        ${reallyOnline ? "⟳" : "⚠"}
       </span>
 
       <div ref=${tabContentRef}
@@ -1245,6 +1307,17 @@ function App() {
       ${congrats && html`<${CongratsModal} rank=${congrats.rank} onDismiss=${() => setCongrats(null)} />`}
       ${showFinalModal && html`<${FinalRaceModal} rows=${namedRows} isAdmin=${isAdmin}
         myRacerId=${myRacerId} onVote=${voteFinal} onResolve=${resolveFinalRace} />`}
+      ${!showFinalModal && pendingScheduleSync && html`<${ScheduleSyncModal} race=${race}
+        onAccept=${acceptScheduleSync} onDecline=${declineScheduleSync} />`}
+      ${showSyncModal && html`
+        <div class="modal-overlay" onClick=${(e) => { if (e.target === e.currentTarget) setShowSyncModal(false); }}>
+          <div class="modal" style="text-align:center;max-width:320px">
+            <div style="font-size:36px">⟳</div>
+            <h3>Back online</h3>
+            <p class="modal__msg">Whatever you logged while offline is syncing now — everyone else will see it shortly.</p>
+            <button class="btn btn--go" style="width:100%" onClick=${() => setShowSyncModal(false)}>Got it</button>
+          </div>
+        </div>`}
     </div>`;
 }
 
@@ -1266,6 +1339,46 @@ function TabNav({ onChange }) {
     </nav>`;
 }
 
+/* character pose photos are the one thing worth costing data every single
+   render — cache them once via the Cache Storage API (works without a
+   service worker) so re-opening the app, or losing signal mid-race, still
+   shows every racer's sprite from disk instead of a broken image icon.
+   no-cors keeps this working for imgur/Storage URLs that don't send CORS
+   headers back to a plain fetch() — the response is opaque but still
+   perfectly usable as an <img> source once it's a blob: URL. */
+const IMG_CACHE_NAME = "mm-images-v1";
+
+function CachedImage({ src, alt = "" }) {
+  const [resolvedSrc, setResolvedSrc] = useState(src);
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl = null;
+    setResolvedSrc(src);
+    if (!src || !window.caches) return;
+
+    (async () => {
+      try {
+        const cache = await caches.open(IMG_CACHE_NAME);
+        const cached = await cache.match(src);
+        if (cached) {
+          const blob = await cached.blob();
+          if (cancelled) return;
+          objectUrl = URL.createObjectURL(blob);
+          setResolvedSrc(objectUrl);
+        } else if (navigator.onLine) {
+          const res = await fetch(src, { mode: "no-cors" }).catch(() => null);
+          if (res && !cancelled) await cache.put(src, res).catch(() => {});
+        }
+      } catch {}
+    })();
+
+    return () => { cancelled = true; if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [src]);
+
+  return html`<img src=${resolvedSrc} alt=${alt} loading="lazy" />`;
+}
+
 /* ---------- RACE TRACKER (home) — podium + track ---------- */
 
 function RaceHero({ race, rows, cur, pooled, hostRacerId }) {
@@ -1281,7 +1394,7 @@ function RaceHero({ race, rows, cur, pooled, hostRacerId }) {
             const face = character ? (character.finish || character.moving || character.start) : null;
             return html`<div class=${`place place--${n} ${r ? "" : "place--none"}`}>
               <div class="place__avatar avatar avatar--${r ? laneClass(r) : "auto"}" style=${r ? laneStyle(r) : ""}>
-                ${face ? html`<img src=${face} alt="" loading="lazy" />` : html`<span>${r ? initial(r.name) : "?"}</span>`}
+                ${face ? html`<${CachedImage} src=${face} />` : html`<span>${r ? initial(r.name) : "?"}</span>`}
               </div>
               <div class="place__block">
                 <div class="place__no">${n}</div>
@@ -1313,6 +1426,7 @@ function RaceHero({ race, rows, cur, pooled, hostRacerId }) {
    to log in the first place. */
 function LogCalendar({ race, rows, cur }) {
   const [monthOffset, setMonthOffset] = useState(0);
+  const [openDay, setOpenDay] = useState(null);
   const named = rows.filter((r) => (r.name || "").trim());
 
   const base = new Date();
@@ -1367,7 +1481,9 @@ function LogCalendar({ race, rows, cur }) {
             if (d === null) return html`<div class="logcal__cell logcal__cell--pad" key=${"p" + i}></div>`;
             const ds = dateStr(d);
             const entries = dayStatus[ds] || [];
-            return html`<div class=${`logcal__cell ${ds === todayStr ? "logcal__cell--today" : ""}`} key=${ds}>
+            /* nothing assigned to this day → nothing to click, nothing to show */
+            return html`<div class=${`logcal__cell ${ds === todayStr ? "logcal__cell--today" : ""} ${entries.length ? "logcal__cell--clickable" : ""}`}
+              key=${ds} onClick=${() => entries.length && setOpenDay({ date: ds, entries })}>
               <span class="logcal__daynum">${d}</span>
               ${entries.length > 0 && html`<div class="logcal__dots">
                 ${entries.map(({ r, confirmed }) => html`<span key=${r.id}
@@ -1383,6 +1499,22 @@ function LogCalendar({ race, rows, cur }) {
         <span class="logcal__dot logcal__dot--on avatar--c3"></span> Logged
         <span class="logcal__dot logcal__dot--off avatar--c0"></span> Not logged yet
       </p>
+
+      ${openDay && html`
+        <div class="modal-overlay" onClick=${(e) => { if (e.target === e.currentTarget) setOpenDay(null); }}>
+          <div class="modal" style="max-width:320px">
+            <p class="modal__msg" style="font-weight:700">${prettyDate(openDay.date)}</p>
+            <div class="logcal__daylist">
+              ${openDay.entries.map(({ r, confirmed }) => html`
+                <div class="logcal__dayrow" key=${r.id}>
+                  <span class=${`logcal__dot avatar--${laneClass(r)} ${confirmed ? "logcal__dot--on" : "logcal__dot--off"}`} style=${laneStyle(r)}></span>
+                  <span>${r.name}</span>
+                  <span class="logcal__daystatus">${confirmed ? "Logged" : "Not logged yet"}</span>
+                </div>`)}
+            </div>
+            <button class="btn btn--go" style="width:100%;margin-top:16px" onClick=${() => setOpenDay(null)}>Close</button>
+          </div>
+        </div>`}
     </section>`;
 }
 
@@ -1412,7 +1544,7 @@ function Lane({ r, race, cur, isHost }) {
           <div class="strip__fill" style=${`width:${shown * 100}%`}></div>
           <div class="racer-sprite ${src ? "" : "racer-sprite--blank"}" style=${`left:${left}%`}>
             ${src
-              ? html`<img src=${src} alt="" loading="lazy" />`
+              ? html`<${CachedImage} src=${src} />`
               : html`<span>${named ? initial(named) : "+"}</span>`}
           </div>
         </div>
@@ -1523,8 +1655,14 @@ function HomeTab({ race, cur, rows, isAdmin, trueAdmin, hostRacerId, onPatchRace
 
           <p class="goalcard__label" style="margin-top:14px">Save by (default for everyone)</p>
           <input class="field field--mono" type="date" style="width:100%" value=${race.targetDate || ""} min=${today()}
-            aria-label="Default save-by date" onChange=${(e) => onPatchRace({ targetDate: e.target.value })} />
+            aria-label="Default save-by date"
+            onChange=${(e) => onPatchRace({ targetDate: e.target.value, scheduleVersion: increment(1) })} />
           <p class="goalcard__hint">Pre-fills everyone's savings plan — anyone can still pick their own date from their own profile</p>
+
+          <p class="goalcard__label" style="margin-top:14px">Savings cadence (default for everyone)</p>
+          <${CadencePicker} cadence=${race.cadence || "every:1"}
+            onChange=${(v) => onPatchRace({ cadence: v, scheduleVersion: increment(1) })} />
+          <p class="goalcard__hint">Same idea — everyone starts on this schedule, anyone can still pick their own from their own profile</p>
         </div>
       </section>
 
@@ -1534,7 +1672,7 @@ function HomeTab({ race, cur, rows, isAdmin, trueAdmin, hostRacerId, onPatchRace
           ${rows.length === 0
             ? html`<div class="empty">No lanes yet. Add one below.</div>`
             : rows.map((r) => html`<${RacerIdentityRow} key=${r.id} r=${r} race=${race}
-                isHost=${r.id === hostRacerId} canKick=${trueAdmin || !r.joinedSelf}
+                isHost=${r.id === hostRacerId} canKick=${trueAdmin}
                 onPatch=${(p) => onPatchRacer(r.id, p)}
                 onRemove=${() => onRemoveRacer(r)} />`)}
         </div>
@@ -1925,7 +2063,7 @@ function RosterRow({ r, race, cur, isHost, onClick }) {
   return html`
     <button class="rosterrow" onClick=${onClick}>
       <div class=${`avatar avatar--${laneClass(r)}`} style=${laneStyle(r)}>
-        ${face ? html`<img src=${face} alt="" loading="lazy" />` : html`<span>${initial(r.name)}</span>`}
+        ${face ? html`<${CachedImage} src=${face} />` : html`<span>${initial(r.name)}</span>`}
       </div>
       <div class="rosterrow__id">
         <div class="card__name-static">${r.name}${isHost ? html` <span class="hosttag">Admin/Host</span>` : ""}</div>
@@ -2050,7 +2188,7 @@ function RacerDetailPage({ r, race, cur, isOwner, isAdmin, isHost, onBack, onAdd
   const [date, setDate] = useState(today());
 
   const remaining = Math.max(0, r.effectiveGoal - r.saved);
-  const cadence = r.cadence || "every:1";
+  const cadence = racerCadence(r, race);
   const target = racerTargetDate(r, race);
   const entries = [...(r.entries || [])].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   /* the owner always can; "public" additionally opens it up to anyone else in the race */
@@ -2346,6 +2484,29 @@ function FinalRaceModal({ rows, isAdmin, myRacerId, onVote, onResolve }) {
               <button class="btn btn--danger" onClick=${() => onResolve("reset")}>Start new race</button>
             </div>`
           : html`<p class="goalcard__hint" style="margin-top:14px">Waiting on the host to make the final call…</p>`}
+      </div>
+    </div>`;
+}
+
+/* shown only to racers still following the shared default schedule, the
+   moment the host changes it — keeps showing (App only renders it while
+   the racer's own scheduleAckVersion trails the race's) until they answer
+   either way, surviving a closed-and-reopened app since both sides of the
+   comparison live in Firestore, not local state */
+function ScheduleSyncModal({ race, onAccept, onDecline }) {
+  const cadence = race.cadence || "every:1";
+  return html`
+    <div class="modal-overlay">
+      <div class="modal" style="max-width:340px">
+        <p class="modal__msg" style="font-weight:700">The host adjusted the shared savings schedule</p>
+        <p class="modal__msg">
+          ${race.targetDate ? html`Save by <b>${prettyDate(race.targetDate)}</b>, ` : ""}${cadenceLabel(cadence).toLowerCase()}.
+          Apply this to your own log too?
+        </p>
+        <div class="modal__actions" style="margin-top:16px">
+          <button class="btn btn--ghost" onClick=${onDecline}>No, keep mine</button>
+          <button class="btn btn--go" onClick=${onAccept}>Yes, apply it</button>
+        </div>
       </div>
     </div>`;
 }

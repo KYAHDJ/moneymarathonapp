@@ -76,6 +76,22 @@ input, select { font-family: inherit; }
   max-width: 980px;
   margin: 0 auto;
   padding: 20px 16px 96px;
+  transition: padding-top 0.2s ease;
+}
+.shell--offline { padding-top: 48px; }
+
+.offlinebar {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 700;
+  background: var(--red);
+  color: #fff;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  padding: 7px 12px;
+  padding-top: calc(7px + env(safe-area-inset-top, 0px));
 }
 
 .section { margin-top: 30px; }
@@ -372,6 +388,24 @@ input, select { font-family: inherit; }
   margin: 10px 0 0;
 }
 .logcal__legend .logcal__dot { margin-right: 2px; vertical-align: middle; }
+
+.logcal__cell--clickable { cursor: pointer; }
+.logcal__cell--clickable:hover { background: var(--grid); }
+
+.logcal__daylist {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+.logcal__dayrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.logcal__dayrow .logcal__dot { width: 10px; height: 10px; }
+.logcal__daystatus { margin-left: auto; color: var(--ink-faint); font-size: 12px; }
 
 /* fixed to the bottom of the viewport, only shown on Race Tracker — it
    doesn't scroll away with the page content */
