@@ -114,9 +114,9 @@ const DEFAULT_CHARACTERS = [
   {
     id: "orange-cat",
     name: "Orange cat",
-    start: "https://i.imgur.com/6CiFpZv.png",
-    moving: "https://i.imgur.com/tGxlFqF.png",
-    finish: "https://i.imgur.com/zkd1rwZ.png",
+    start: "./characters/orange-cat-start.png",
+    moving: "./characters/orange-cat-moving.png",
+    finish: "./characters/orange-cat-finish.png",
   },
   {
     id: "bw-cat",
@@ -1304,12 +1304,12 @@ function App() {
     }
   };
 
-  /* a racer with an existing plan is one who, at some point, actually
-     generated entries from a save-by/cadence schedule — a brand new joiner
-     who's never touched either just sees the current shared default
-     pre-filled next time they open their profile, nothing to "ask" them */
-  const hasExistingPlan = (r) => (r?.entries || []).some((e) => e.source === "plan");
-  const pendingScheduleSync = !!myRacer && !myRacer.scheduleCustom && hasExistingPlan(myRacer)
+  /* anyone still on the shared default (never set their own save-by date
+     or cadence) gets asked every time the host changes it on the Dashboard
+     — including a brand new racer with an empty log, since the whole point
+     is offering to fill their log in for them, not just people who already
+     had a plan running */
+  const pendingScheduleSync = !!myRacer && !myRacer.scheduleCustom
     && race && race !== "missing"
     && (Number(race.scheduleVersion) || 0) > (Number(myRacer.scheduleAckVersion) || 0);
 
@@ -2608,14 +2608,14 @@ function ScheduleSyncModal({ race, onAccept, onDecline }) {
   return html`
     <div class="modal-overlay">
       <div class="modal" style="max-width:340px">
-        <p class="modal__msg" style="font-weight:700">The host adjusted the shared savings schedule</p>
+        <p class="modal__msg" style="font-weight:700">The host set a savings schedule</p>
         <p class="modal__msg">
           ${race.targetDate ? html`Save by <b>${prettyDate(race.targetDate)}</b>, ` : ""}${cadenceLabel(cadence).toLowerCase()}.
-          Apply this to your own log too?
+          Want your log filled in automatically to match, or would you rather set it up yourself?
         </p>
         <div class="modal__actions" style="margin-top:16px">
-          <button class="btn btn--ghost" onClick=${onDecline}>No, keep mine</button>
-          <button class="btn btn--go" onClick=${onAccept}>Yes, apply it</button>
+          <button class="btn btn--ghost" onClick=${onDecline}>I'll do it myself</button>
+          <button class="btn btn--go" onClick=${onAccept}>Yes, fill it in for me</button>
         </div>
       </div>
     </div>`;
