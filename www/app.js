@@ -926,6 +926,10 @@ function App() {
      warning every time it's opened, so this just saves */
   const setGoal = (r, newGoal) => patchRacer(r.id, { goal: newGoal });
 
+  /* "public" lets anyone in the race edit this racer's own log — off by
+     default (only the racer themself can), only the racer can flip it */
+  const setEditAccess = (r, editAccess) => patchRacer(r.id, { editAccess });
+
   /* target date / cadence change → (re)build the planned, uncheck-yet entries for the remaining balance.
      every installment is a whole number, and the last one absorbs whatever rounding left over so the
      total lands exactly on the remaining balance — never over, never under. */
@@ -1046,7 +1050,8 @@ function App() {
                     onEditAmount=${(eid, amt) => editEntryAmount(activeRow, eid, amt)}
                     onApplyPlan=${(t, c) => applySavingsPlan(activeRow, t, c)}
                     onClearLog=${() => clearLog(activeRow)}
-                    onSetGoal=${(g) => setGoal(activeRow, g)} />`
+                    onSetGoal=${(g) => setGoal(activeRow, g)}
+                    onSetEditAccess=${(v) => setEditAccess(activeRow, v)} />`
                 : html`<div class="tab-panel"><div class="empty">This racer was removed.</div>
                     <button class="btn" onClick=${() => setDetailRacerId(null)}>← Back</button></div>`)
             : html`
@@ -1784,7 +1789,7 @@ function GoalEditor({ value, sharedGoal, cur, onCommit }) {
     </div>`;
 }
 
-function RacerDetailPage({ r, race, cur, isOwner, onBack, onAddEntry, onToggleEntry, onRemoveEntry, onEditAmount, onApplyPlan, onClearLog, onSetGoal }) {
+function RacerDetailPage({ r, race, cur, isOwner, onBack, onAddEntry, onToggleEntry, onRemoveEntry, onEditAmount, onApplyPlan, onClearLog, onSetGoal, onSetEditAccess }) {
   const [amount, setAmount] = useState("");
   const [date, setDate] = useState(today());
 
@@ -1792,6 +1797,8 @@ function RacerDetailPage({ r, race, cur, isOwner, onBack, onAddEntry, onToggleEn
   const cadence = r.cadence || "every:1";
   const target = r.targetDate || "";
   const entries = [...(r.entries || [])].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  /* the owner always can; "public" additionally opens it up to anyone else in the race */
+  const canEdit = isOwner || r.editAccess === "public";
 
   const submit = () => {
     const amt = Math.round(Number(amount));
@@ -1826,8 +1833,21 @@ function RacerDetailPage({ r, race, cur, isOwner, onBack, onAddEntry, onToggleEn
           </table>
           <div class="bar detailcard__bar"><div class="bar__fill" style=${`width:${Math.min(100, r.pct * 100)}%`}></div></div>
 
-          ${!isOwner && html`<p class="adminlock" style="margin-top:16px">This is ${r.name}'s profile — only they can log or edit their savings.</p>`}
-          <div class=${isOwner ? "" : "adminlock__area"}>
+          <div class="privacyrow">
+            <span class="privacyrow__k">Who can edit this profile?</span>
+            ${isOwner
+              ? html`<${Dropdown} className="dropdown--inline" value=${r.editAccess === "public" ? "public" : "private"}
+                  ariaLabel="Who can edit this profile"
+                  options=${[
+                    { value: "private", label: "Only me" },
+                    { value: "public", label: "Everyone" },
+                  ]}
+                  onChange=${onSetEditAccess} />`
+              : html`<span class="privacyrow__v">${r.editAccess === "public" ? "Everyone" : `Only ${r.name}`}</span>`}
+          </div>
+
+          ${!canEdit && html`<p class="adminlock" style="margin-top:12px">This is ${r.name}'s profile — only they can log or edit their savings.</p>`}
+          <div class=${canEdit ? "" : "adminlock__area"}>
           <div class="plan" ref=${registerTarget("profile_plan")}>
             <div class="plan__row">
               <span class="plan__label">Save by</span>
