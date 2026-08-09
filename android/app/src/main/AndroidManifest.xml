@@ -34,13 +34,9 @@
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
 
-        <!-- PLACEHOLDER: Google's public test AdMob App ID. Swap for your own
-             real App ID (from the AdMob console, once you create the app there)
-             before publishing — ads will only ever be Google's "Test Ad" label
-             until then, never real/paying ads. -->
         <meta-data
             android:name="com.google.android.gms.ads.APPLICATION_ID"
-            android:value="ca-app-pub-3940256099942544~3347511713"/>
+            android:value="ca-app-pub-9372606273046322~6792536377"/>
     </application>
 
     <!-- Permissions -->

@@ -2264,6 +2264,8 @@ function RaceWinTab({ race, cur, rows, raceCode, hostRacerId, onOpenRacer, onLea
             <button class="btn btn--sm racecard__btn" onClick=${onOpenSound}>Sound & music</button>
           </div>
           <button class="btn btn--sm btn--danger-outline" style="width:100%" onClick=${onLeave}>Leave this race</button>
+          <a href="https://kyahdj.github.io/moneymarathonapp/privacy-policy.html" target="_blank" rel="noopener"
+            class="racecard__privacy">Privacy Policy</a>
         </div>
       </section>
     </div>`;
