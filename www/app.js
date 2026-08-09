@@ -43,6 +43,9 @@ const compact = (n, cur = "₱") => {
 
 /* a racer's own goal if they've set one, otherwise the race's shared goal */
 const racerGoal = (r, race) => (r.goal && Number(r.goal) > 0 ? Number(r.goal) : Number(race?.goal) || 0);
+/* same fallback pattern as racerGoal — a shared default everyone starts
+   with, freely overridden per-racer from their own profile */
+const racerTargetDate = (r, race) => r.targetDate || race?.targetDate || "";
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -54,6 +57,11 @@ const prettyDate = (iso) => {
 };
 
 const initial = (name) => (name || "?").trim().charAt(0).toUpperCase() || "?";
+const ordinal = (n) => {
+  const s = ["th", "st", "nd", "rd"];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+};
 
 /* a racer's lane/profile colour: their own pick, or the auto position cycle */
 const isHexColor = (c) => !!c && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(c);
@@ -587,7 +595,10 @@ function App() {
     step: 0,
   }));
   const [showSound, setShowSound] = useState(false);
+  const [congrats, setCongrats] = useState(null);
+  const prevHomeRef = useRef({ id: null, home: null });
   const prevRacersRef = useRef(null);
+  const selfLeavingRef = useRef(false);
   const splashStarted = useRef(false);
 
   /* warnings/errors stay up longer — a good-news toast can flash by,
@@ -751,7 +762,21 @@ function App() {
             }
           });
           prev.forEach((r) => {
-            if (!nextById.has(r.id) && (r.name || "").trim() && r.id !== myId) {
+            if (nextById.has(r.id)) return;
+            if (r.id === myId) {
+              /* our own racer vanished — if we didn't trigger that ourselves
+                 via leaveRace(), the host kicked us. tell them and bail out
+                 to the gate instead of limping along pointed at a dead racer */
+              if (!selfLeavingRef.current) {
+                say("You were removed from the race by the host.", true);
+                notifyNow("Money Marathon", "You were removed from the race by the host.");
+                localStorage.removeItem(LS_RACE);
+                localStorage.removeItem(lsRacer(raceId));
+                setTimeout(() => location.reload(), 1800);
+              }
+              return;
+            }
+            if ((r.name || "").trim()) {
               say(`${r.name} left the race`);
               notifyNow("Money Marathon", `${r.name} left the race`);
             }
@@ -868,15 +893,45 @@ function App() {
     const id = (code || "").trim().toUpperCase();
     if (!id) return;
     try {
-      await withTimeout((async () => {
+      /* the connect-and-look-up step gets the hard 10s budget; the sync-or-not
+         question below waits on the person, which shouldn't itself be able
+         to trip a "taking too long" error while they're just thinking */
+      const { docs } = await withTimeout((async () => {
         await waitForAuth();
         const snap = await getDoc(raceRef(id));
-        if (!snap.exists()) { say("No race with that code.", true); return; }
+        if (!snap.exists()) throw new Error("No race with that code.");
         const existing = await getDocs(racersRef(id));
-        const order = existing.size ? Math.max(...existing.docs.map((d) => d.data().order || 0)) + 1 : 0;
+        return { docs: existing.docs };
+      })(), 10000, "Taking too long to connect — check your internet and try again.");
+
+      let joinName = (name || "").trim();
+      /* same name as someone already racing here — could be the same
+         person on a new device, or two different people who happen to
+         share a name. ask which one, rather than silently guessing. */
+      const match = docs.find((d) => (d.data().name || "").trim().toLowerCase() === joinName.toLowerCase());
+      if (match) {
+        const sync = await askConfirm(
+          `"${joinName}" is already racing here. Is that you on a different device? Sync with their existing progress instead of starting a new lane.`,
+          { okLabel: "Yes, sync", cancelLabel: "No, that's someone else", danger: false }
+        );
+        if (sync) {
+          localStorage.setItem(LS_RACE, id);
+          localStorage.setItem(lsRacer(id), match.id);
+          setRaceId(id);
+          return;
+        }
+        const taken = new Set(docs.map((d) => (d.data().name || "").trim().toLowerCase()));
+        let n = 2;
+        while (taken.has(`${joinName}-${n}`.toLowerCase())) n++;
+        joinName = `${joinName}-${n}`;
+        say(`Joining as "${joinName}" since "${name.trim()}" is already taken.`);
+      }
+
+      await withTimeout((async () => {
+        const order = docs.length ? Math.max(...docs.map((d) => d.data().order || 0)) + 1 : 0;
         const racerId = newId(10);
         await setDoc(racerRef(id, racerId), {
-          name, bank: "", characterId: "", entries: [], order, editAccess: "private", joinedSelf: true, createdAt: serverTimestamp(),
+          name: joinName, bank: "", characterId: "", entries: [], order, editAccess: "private", joinedSelf: true, createdAt: serverTimestamp(),
         });
         localStorage.setItem(LS_RACE, id);
         localStorage.setItem(lsRacer(id), racerId);
@@ -889,6 +944,7 @@ function App() {
 
   const leaveRace = async () => {
     if (!(await askConfirm("Leave this race? You'll be removed from the track — everyone else keeps racing.", { okLabel: "Yes, leave" }))) return;
+    selfLeavingRef.current = true;
     const myRacerId = localStorage.getItem(lsRacer(raceId));
     /* the host leaving hands admin to whoever joined next — the race
        shouldn't end up with no one able to touch its setup */
@@ -928,12 +984,13 @@ function App() {
     }));
   };
 
-  /* a racer who joined on their own can only remove themselves, via Leave —
-     not even the host can delete them from Dashboard. Lanes the host added
-     (never claimed by a device) stay removable, since nobody "owns" them. */
+  /* only the true host can kick a racer who joined on their own — a
+     co-editor granted Dashboard access still can't remove someone else's
+     joined lane, only lanes the host added that nobody's claimed */
   const removeRacer = async (r) => {
-    if (r.joinedSelf) { say(`${r.name || "This racer"} joined on their own — only they can remove themselves.`, true); return; }
-    if (!(await askConfirm(`Remove ${r.name || "this racer"} and their whole savings log? This can't be undone.`))) return;
+    if (r.joinedSelf && !isAdmin) { say(`${r.name || "This racer"} joined on their own — only the host can remove them.`, true); return; }
+    const verb = r.joinedSelf ? "Kick" : "Remove";
+    if (!(await askConfirm(`${verb} ${r.name || "this racer"} and erase their whole savings log? This can't be undone.`, { okLabel: `Yes, ${verb.toLowerCase()}` }))) return;
     return guard(deleteDoc(racerRef(raceId, r.id)));
   };
 
@@ -1027,9 +1084,15 @@ function App() {
   }, [racers, goal]);
 
   const pooled = rows.reduce((s, r) => s + r.saved, 0);
-  const joined = rows.filter((r) => (r.name || "").trim()).length;
+  const namedRows = rows.filter((r) => (r.name || "").trim());
+  const joined = namedRows.length;
   const leader = rows.find((r) => r.rank === 1);
   const activeRow = detailRacerId ? rows.find((x) => x.id === detailRacerId) : null;
+  /* everyone home at once → the race is over. keeps showing (to everyone)
+     until the host makes the binding call, tracked by race.raceResolved so
+     it doesn't reappear the instant the next snapshot rolls in */
+  const allFinished = namedRows.length > 0 && namedRows.every((r) => r.home);
+  const showFinalModal = allFinished && race && race !== "missing" && !race.raceResolved;
 
   /* whoever created the race is the host — only they can touch race setup,
      the racer list, and the character library; everyone else's own profile
@@ -1044,12 +1107,42 @@ function App() {
      without handing over the whole admin role */
   const canEditDashboard = isAdmin || myRacer?.canEditDashboard === true;
 
+  /* fires once, right when THIS device's own racer crosses their goal —
+     ref tracks the previous home state per-racer so it never re-fires on
+     unrelated re-renders, and never fires on first load for someone who
+     had already finished before this session opened */
+  useEffect(() => {
+    if (!myRacer) return;
+    const prev = prevHomeRef.current;
+    if (prev.id === myRacer.id && prev.home === false && myRacer.home === true) {
+      setCongrats({ rank: myRacer.rank });
+    }
+    prevHomeRef.current = { id: myRacer.id, home: myRacer.home };
+  }, [myRacer?.id, myRacer?.home, myRacer?.rank]);
+
   const setDashboardAccess = (r, allowed) => patchRacer(r.id, { canEditDashboard: allowed });
 
   const transferAdmin = async (r) => {
     if (!(await askConfirm(`Make ${r.name || "this racer"} the race host? They'll be able to edit race setup, the racer list, and the character library — you'll lose that unless they hand it back.`,
       { okLabel: "Transfer" }))) return;
     return guard(updateDoc(raceRef(raceId), { hostRacerId: r.id }));
+  };
+
+  const voteFinal = (vote) => { if (myRacerId) patchRacer(myRacerId, { finalVote: vote }); };
+
+  /* only the host's tap here actually resolves it — everyone else's vote
+     is just a signal the host can see, never binding on its own */
+  const resolveFinalRace = async (decision) => {
+    if (decision === "reset") {
+      if (!(await askConfirm("Start a new race? Every racer's savings log will be wiped and everyone starts fresh toward the same goal.", { okLabel: "Yes, start new race" }))) return;
+      await Promise.all(namedRows.map((r) =>
+        guard(updateDoc(racerRef(raceId, r.id), { entries: [], targetDate: "", cadence: "every:1", finishedAt: null, finalVote: null }))
+      ));
+      await guard(updateDoc(raceRef(raceId), { raceResolved: false }));
+    } else {
+      await Promise.all(namedRows.map((r) => guard(updateDoc(racerRef(raceId, r.id), { finalVote: null }))));
+      await guard(updateDoc(raceRef(raceId), { raceResolved: true }));
+    }
   };
 
   /* ---------- screens ---------- */
@@ -1091,12 +1184,13 @@ function App() {
         style=${`transform-origin:${tabOrigin}`}
         onPointerDown=${onSwipeDown} onPointerUp=${onSwipeUp}>
 
-        ${tab === "track" && html`<${RaceHero} race=${race} rows=${rows} cur=${cur} pooled=${pooled} />`}
+        ${tab === "track" && html`<${RaceHero} race=${race} rows=${rows} cur=${cur} pooled=${pooled} hostRacerId=${hostRacerId} />`}
 
         ${tab === "dashboard" && html`
           <button class="backbtn" onClick=${goBack}>← Back</button>
           <${HomeTab}
-            race=${race} cur=${cur} rows=${rows} isAdmin=${canEditDashboard}
+            race=${race} cur=${cur} rows=${rows} isAdmin=${canEditDashboard} trueAdmin=${isAdmin}
+            hostRacerId=${hostRacerId}
             onPatchRace=${patchRace}
             onPatchRacer=${patchRacer}
             onAddRacer=${addRacer}
@@ -1109,6 +1203,7 @@ function App() {
                 ? html`<${RacerDetailPage} r=${activeRow} race=${race} cur=${cur} rows=${rows}
                     isOwner=${activeRow.id === myRacerId}
                     isAdmin=${isAdmin}
+                    isHost=${activeRow.id === hostRacerId}
                     onBack=${() => setDetailRacerId(null)}
                     onAddEntry=${(e) => addEntry(activeRow, e)}
                     onToggleEntry=${(eid) => toggleEntry(activeRow, eid)}
@@ -1124,7 +1219,7 @@ function App() {
                     <button class="btn" onClick=${() => setDetailRacerId(null)}>← Back</button></div>`)
             : html`
                 <button class="backbtn" onClick=${goBack}>← Back</button>
-                <${RaceWinTab} race=${race} cur=${cur} rows=${rows} raceCode=${raceId}
+                <${RaceWinTab} race=${race} cur=${cur} rows=${rows} raceCode=${raceId} hostRacerId=${hostRacerId}
                   onOpenRacer=${setDetailRacerId}
                   onLeave=${leaveRace}
                   onReplayTutorial=${replayTutorial}
@@ -1147,6 +1242,9 @@ function App() {
         onNext=${nextTutorialStep} onBack=${backTutorialStep} onSkip=${skipTour} />`}
       ${tutorial.phase === "celebrating" && html`<${TutorialCelebration} onDismiss=${finishCelebration} />`}
       ${showSound && html`<${SoundSettingsModal} onClose=${() => setShowSound(false)} />`}
+      ${congrats && html`<${CongratsModal} rank=${congrats.rank} onDismiss=${() => setCongrats(null)} />`}
+      ${showFinalModal && html`<${FinalRaceModal} rows=${namedRows} isAdmin=${isAdmin}
+        myRacerId=${myRacerId} onVote=${voteFinal} onResolve=${resolveFinalRace} />`}
     </div>`;
 }
 
@@ -1170,7 +1268,7 @@ function TabNav({ onChange }) {
 
 /* ---------- RACE TRACKER (home) — podium + track ---------- */
 
-function RaceHero({ race, rows, cur, pooled }) {
+function RaceHero({ race, rows, cur, pooled, hostRacerId }) {
   return html`
     <div class="hero">
       <p class="pooledtotal">Pooled so far: <b>${money(pooled, cur)}</b></p>
@@ -1188,7 +1286,7 @@ function RaceHero({ race, rows, cur, pooled }) {
               <div class="place__block">
                 <div class="place__no">${n}</div>
               </div>
-              <div class="place__name">${r ? r.name : "—"}</div>
+              <div class="place__name">${r ? r.name : "—"}${r && r.id === hostRacerId ? html` <span class="hosttag">Admin/Host</span>` : ""}</div>
               <div class="place__pct">${r ? Math.round(r.pct * 100) + "%" : "open"}</div>
             </div>`;
           })}
@@ -1200,13 +1298,95 @@ function RaceHero({ race, rows, cur, pooled }) {
         <div class="panel track" ref=${registerTarget("lanes")}>
           ${rows.length === 0
             ? html`<div class="empty"><strong>The track is empty.</strong>Add a racer on the Dashboard to open the first lane.</div>`
-            : rows.map((r) => html`<${Lane} key=${r.id} r=${r} race=${race} cur=${cur} />`)}
+            : rows.map((r) => html`<${Lane} key=${r.id} r=${r} race=${race} cur=${cur} isHost=${r.id === hostRacerId} />`)}
         </div>
       </section>
+
+      <${LogCalendar} race=${race} rows=${rows} cur=${cur} />
     </div>`;
 }
 
-function Lane({ r, race, cur }) {
+/* per-day, per-racer savings status — a racer only ever appears on a given
+   day if they actually have an entry (planned or confirmed) dated exactly
+   that day. Days nobody has anything assigned to stay completely blank,
+   so nobody sees themselves flagged as "missing" a day they never planned
+   to log in the first place. */
+function LogCalendar({ race, rows, cur }) {
+  const [monthOffset, setMonthOffset] = useState(0);
+  const named = rows.filter((r) => (r.name || "").trim());
+
+  const base = new Date();
+  base.setDate(1);
+  base.setMonth(base.getMonth() + monthOffset);
+  const year = base.getFullYear();
+  const month = base.getMonth();
+  const monthLabel = base.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+
+  const firstWeekday = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const pad = (n) => String(n).padStart(2, "0");
+  const dateStr = (d) => `${year}-${pad(month + 1)}-${pad(d)}`;
+
+  const entriesSignature = named.map((r) => `${r.id}:${(r.entries || []).map((e) => `${e.date}${e.confirmed ? "1" : "0"}`).join(",")}`).join("|");
+
+  const dayStatus = useMemo(() => {
+    const map = {};
+    for (let d = 1; d <= daysInMonth; d++) {
+      const ds = dateStr(d);
+      const entries = [];
+      named.forEach((r) => {
+        const e = (r.entries || []).find((x) => x.date === ds);
+        if (e) entries.push({ r, confirmed: !!e.confirmed });
+      });
+      if (entries.length) map[ds] = entries;
+    }
+    return map;
+  }, [entriesSignature, year, month, daysInMonth]);
+
+  const cells = [];
+  for (let i = 0; i < firstWeekday; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+  const todayStr = today();
+
+  return html`
+    <section class="section logcal">
+      <div class="logcal__head">
+        <h2 class="section__label" style="margin:0">Savings calendar</h2>
+        <div class="logcal__nav">
+          <button class="logcal__navbtn" onClick=${() => setMonthOffset((n) => n - 1)} aria-label="Previous month">‹</button>
+          <span class="logcal__month">${monthLabel}</span>
+          <button class="logcal__navbtn" onClick=${() => setMonthOffset((n) => n + 1)} aria-label="Next month">›</button>
+        </div>
+      </div>
+      <div class="panel logcal__panel">
+        <div class="logcal__weekdays">
+          ${["S", "M", "T", "W", "T", "F", "S"].map((w, i) => html`<span key=${i}>${w}</span>`)}
+        </div>
+        <div class="logcal__grid">
+          ${cells.map((d, i) => {
+            if (d === null) return html`<div class="logcal__cell logcal__cell--pad" key=${"p" + i}></div>`;
+            const ds = dateStr(d);
+            const entries = dayStatus[ds] || [];
+            return html`<div class=${`logcal__cell ${ds === todayStr ? "logcal__cell--today" : ""}`} key=${ds}>
+              <span class="logcal__daynum">${d}</span>
+              ${entries.length > 0 && html`<div class="logcal__dots">
+                ${entries.map(({ r, confirmed }) => html`<span key=${r.id}
+                  class=${`logcal__dot avatar--${laneClass(r)} ${confirmed ? "logcal__dot--on" : "logcal__dot--off"}`}
+                  style=${laneStyle(r)}
+                  title=${`${r.name} — ${confirmed ? "logged" : "not logged yet"}`}></span>`)}
+              </div>`}
+            </div>`;
+          })}
+        </div>
+      </div>
+      <p class="logcal__legend">
+        <span class="logcal__dot logcal__dot--on avatar--c3"></span> Logged
+        <span class="logcal__dot logcal__dot--off avatar--c0"></span> Not logged yet
+      </p>
+    </section>`;
+}
+
+function Lane({ r, race, cur, isHost }) {
   const named = (r.name || "").trim();
   const character = (race.characters || []).find((c) => c.id === r.characterId);
   const shown = Math.max(0, Math.min(1, r.pct));
@@ -1221,7 +1401,7 @@ function Lane({ r, race, cur }) {
     <div class=${`lane lane--${laneClass(r)} ${r.home ? "lane--home" : ""} ${named ? "" : "lane--empty"}`} style=${laneStyle(r)}>
       <div class="lane__head">
         <span class="lane__no">${String(r.slot).padStart(2, "0")}</span>
-        <span class="lane__name">${named || "Open lane"}</span>
+        <span class="lane__name">${named || "Open lane"}${isHost && named ? html` <span class="hosttag">Admin/Host</span>` : ""}</span>
         <span class="lane__stats">
           <span>${compact(r.saved, cur)}</span>
           <span class="lane__pct">${Math.round(r.pct * 100)}%</span>
@@ -1243,7 +1423,7 @@ function Lane({ r, race, cur }) {
 
 /* ---------- HOME TAB — setup, racers, characters, leave ---------- */
 
-function HomeTab({ race, cur, rows, isAdmin, onPatchRace, onPatchRacer, onAddRacer, onRemoveRacer, say }) {
+function HomeTab({ race, cur, rows, isAdmin, trueAdmin, hostRacerId, onPatchRace, onPatchRacer, onAddRacer, onRemoveRacer, say }) {
   const [form, setForm] = useState({ name: "", start: "", moving: "", finish: "" });
   const [uploading, setUploading] = useState({});
   const [cropTarget, setCropTarget] = useState(null);
@@ -1340,6 +1520,11 @@ function HomeTab({ race, cur, rows, isAdmin, onPatchRace, onPatchRacer, onAddRac
               onCommit=${(v) => onPatchRace({ goal: Math.round(Number(v)) || 0 })} />
           </div>
           <p class="goalcard__hint">Anyone can set their own goal from their own profile instead</p>
+
+          <p class="goalcard__label" style="margin-top:14px">Save by (default for everyone)</p>
+          <input class="field field--mono" type="date" style="width:100%" value=${race.targetDate || ""} min=${today()}
+            aria-label="Default save-by date" onChange=${(e) => onPatchRace({ targetDate: e.target.value })} />
+          <p class="goalcard__hint">Pre-fills everyone's savings plan — anyone can still pick their own date from their own profile</p>
         </div>
       </section>
 
@@ -1349,6 +1534,7 @@ function HomeTab({ race, cur, rows, isAdmin, onPatchRace, onPatchRacer, onAddRac
           ${rows.length === 0
             ? html`<div class="empty">No lanes yet. Add one below.</div>`
             : rows.map((r) => html`<${RacerIdentityRow} key=${r.id} r=${r} race=${race}
+                isHost=${r.id === hostRacerId} canKick=${trueAdmin || !r.joinedSelf}
                 onPatch=${(p) => onPatchRacer(r.id, p)}
                 onRemove=${() => onRemoveRacer(r)} />`)}
         </div>
@@ -1537,13 +1723,14 @@ function ImagePicker({ label, value, uploading, disabled, invalid, onChange, onP
     </div>`;
 }
 
-function RacerIdentityRow({ r, race, onPatch, onRemove }) {
+function RacerIdentityRow({ r, race, isHost, canKick, onPatch, onRemove }) {
   return html`
     <div class="racercard">
       <div class="racercard__row">
         <${LiveInput} className="field racercard__name"
           value=${r.name} placeholder="Who's in this lane?" aria-label="Racer name"
           onCommit=${(v) => onPatch({ name: v })} />
+        ${isHost && html`<span class="hosttag">Admin/Host</span>`}
         <${BankPicker} value=${r.bank} onChange=${(v) => onPatch({ bank: v })} />
       </div>
       <div class="racercard__row">
@@ -1551,7 +1738,7 @@ function RacerIdentityRow({ r, race, onPatch, onRemove }) {
           options=${[{ value: "", label: "No character" }, ...(race.characters || []).map((c) => ({ value: c.id, label: c.name }))]}
           onChange=${(v) => onPatch({ characterId: v })} />
         <${ColorPicker} value=${r.color || ""} onChange=${(v) => onPatch({ color: v })} />
-        ${!r.joinedSelf && html`<button class="racercard__remove" onClick=${onRemove} aria-label="Remove racer">×</button>`}
+        ${canKick && html`<button class="racercard__remove" onClick=${onRemove} aria-label="Remove racer">×</button>`}
       </div>
     </div>`;
 }
@@ -1697,7 +1884,7 @@ function BankPicker({ value, onChange }) {
 
 /* ---------- RACER-PROFILES TAB — roster list, tap a racer to open their page ---------- */
 
-function RaceWinTab({ race, cur, rows, raceCode, onOpenRacer, onLeave, onReplayTutorial, onOpenSound, say }) {
+function RaceWinTab({ race, cur, rows, raceCode, hostRacerId, onOpenRacer, onLeave, onReplayTutorial, onOpenSound, say }) {
   const named = rows.filter((r) => (r.name || "").trim());
   return html`
     <div class="tab-panel">
@@ -1706,6 +1893,7 @@ function RaceWinTab({ race, cur, rows, raceCode, onOpenRacer, onLeave, onReplayT
           ? html`<div class="empty"><strong>No racers yet.</strong>Add someone on the Dashboard first.</div>`
           : html`<div class="panel" ref=${registerTarget("roster_row")} style="padding:0">
               ${named.map((r) => html`<${RosterRow} key=${r.id} r=${r} race=${race} cur=${cur}
+                isHost=${r.id === hostRacerId}
                 onClick=${() => onOpenRacer(r.id)} />`)}
             </div>`}
       </section>
@@ -1731,7 +1919,7 @@ function RaceWinTab({ race, cur, rows, raceCode, onOpenRacer, onLeave, onReplayT
     </div>`;
 }
 
-function RosterRow({ r, race, cur, onClick }) {
+function RosterRow({ r, race, cur, isHost, onClick }) {
   const character = (race.characters || []).find((c) => c.id === r.characterId);
   const face = character ? (character.moving || character.start) : null;
   return html`
@@ -1740,7 +1928,7 @@ function RosterRow({ r, race, cur, onClick }) {
         ${face ? html`<img src=${face} alt="" loading="lazy" />` : html`<span>${initial(r.name)}</span>`}
       </div>
       <div class="rosterrow__id">
-        <div class="card__name-static">${r.name}</div>
+        <div class="card__name-static">${r.name}${isHost ? html` <span class="hosttag">Admin/Host</span>` : ""}</div>
         <div class="bar" style="margin:6px 0 0"><div class="bar__fill" style=${`width:${Math.min(100, r.pct * 100)}%`}></div></div>
       </div>
       <div class="rosterrow__money">
@@ -1857,13 +2045,13 @@ function GoalEditor({ value, sharedGoal, cur, onCommit }) {
     </div>`;
 }
 
-function RacerDetailPage({ r, race, cur, isOwner, isAdmin, onBack, onAddEntry, onToggleEntry, onRemoveEntry, onEditAmount, onApplyPlan, onClearLog, onSetGoal, onSetEditAccess, onSetDashboardAccess, onTransferAdmin }) {
+function RacerDetailPage({ r, race, cur, isOwner, isAdmin, isHost, onBack, onAddEntry, onToggleEntry, onRemoveEntry, onEditAmount, onApplyPlan, onClearLog, onSetGoal, onSetEditAccess, onSetDashboardAccess, onTransferAdmin }) {
   const [amount, setAmount] = useState("");
   const [date, setDate] = useState(today());
 
   const remaining = Math.max(0, r.effectiveGoal - r.saved);
   const cadence = r.cadence || "every:1";
-  const target = r.targetDate || "";
+  const target = racerTargetDate(r, race);
   const entries = [...(r.entries || [])].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   /* the owner always can; "public" additionally opens it up to anyone else in the race */
   const canEdit = isOwner || r.editAccess === "public";
@@ -1881,7 +2069,7 @@ function RacerDetailPage({ r, race, cur, isOwner, isAdmin, onBack, onAddEntry, o
       <button class="btn btn--sm btn--ghost" onClick=${onBack} style="margin-bottom:14px">← Back to racers</button>
 
       <div class="detailcard">
-        <div class="detailcard__banner">${r.name}${r.home ? " 🏁" : ""}</div>
+        <div class="detailcard__banner">${r.name}${isHost ? html` <span class="hosttag">Admin/Host</span>` : ""}${r.home ? " 🏁" : ""}</div>
 
         <div class="detailcard__body">
           <div class="detailcard__chart" ref=${registerTarget("profile_chart")}><${DonutChart} pct=${r.pct} /></div>
@@ -2096,6 +2284,68 @@ function TutorialCelebration({ onDismiss }) {
         <h3>You're all set!</h3>
         <p class="modal__msg">Welcome to the race — good luck hitting your goal!</p>
         <button class="btn btn--go" style="width:100%" onClick=${onDismiss}>Let's go</button>
+      </div>
+    </div>`;
+}
+
+/* shown to a single person the moment their own racer crosses their goal —
+   same confetti treatment as the tutorial finale, but with their placement */
+function CongratsModal({ rank, onDismiss }) {
+  const colors = ["c0", "c1", "c2", "c3", "c4", "c5"];
+  const pieces = useMemo(() => Array.from({ length: 36 }, (_, i) => ({
+    left: Math.random() * 100,
+    delay: Math.random() * 2.4,
+    duration: 2.4 + Math.random() * 1.6,
+    color: colors[i % colors.length],
+  })), []);
+  return html`
+    <div class="modal-overlay tutorial-celebrate">
+      <div class="tutorial-confetti">
+        ${pieces.map((p, i) => html`<span key=${i} class=${`avatar--${p.color}`}
+          style=${`left:${p.left}%;animation-delay:${p.delay}s;animation-duration:${p.duration}s;background:var(--lane-ink);`}></span>`)}
+      </div>
+      <div class="modal" style="text-align:center;position:relative;z-index:2">
+        <div style="font-size:40px">🏆</div>
+        <h3>You reached your goal!</h3>
+        <p class="modal__msg">You finished in <b>${ordinal(rank)} place</b> — congratulations!</p>
+        <button class="btn btn--go" style="width:100%" onClick=${onDismiss}>Nice!</button>
+      </div>
+    </div>`;
+}
+
+/* shown to EVERYONE the moment the whole field has finished — stays up
+   (App only renders it while race.raceResolved is falsy) until the host
+   taps one of the two resolve buttons. Non-hosts can cast a vote so the
+   host can see what people want, but only the host's tap is binding. */
+function FinalRaceModal({ rows, isAdmin, myRacerId, onVote, onResolve }) {
+  const winner = rows.find((r) => r.rank === 1);
+  const resumeVotes = rows.filter((r) => r.finalVote === "resume").length;
+  const resetVotes = rows.filter((r) => r.finalVote === "reset").length;
+  const myVote = rows.find((r) => r.id === myRacerId)?.finalVote || "";
+
+  return html`
+    <div class="modal-overlay">
+      <div class="modal" style="text-align:center;max-width:360px">
+        <div style="font-size:40px">🏁</div>
+        <h3>The race is over!</h3>
+        <p class="modal__msg">Everyone's hit their goal${winner ? html` — congrats to ${html`<b>${winner.name}</b>`} for finishing first!` : "!"}</p>
+
+        <p class="goalcard__hint" style="margin-top:16px">Cast your vote — the host still makes the final call</p>
+        <div class="modal__actions">
+          <button class=${"btn btn--sm " + (myVote === "resume" ? "btn--go" : "btn--ghost")}
+            onClick=${() => onVote("resume")}>Resume (${resumeVotes})</button>
+          <button class=${"btn btn--sm " + (myVote === "reset" ? "btn--go" : "btn--ghost")}
+            onClick=${() => onVote("reset")}>New race (${resetVotes})</button>
+        </div>
+
+        ${isAdmin
+          ? html`
+            <p class="modal__msg" style="margin-top:16px;font-size:13px">As the host, the final call is yours:</p>
+            <div class="modal__actions" style="margin-top:6px">
+              <button class="btn btn--ghost" onClick=${() => onResolve("resume")}>Resume this race</button>
+              <button class="btn btn--danger" onClick=${() => onResolve("reset")}>Start new race</button>
+            </div>`
+          : html`<p class="goalcard__hint" style="margin-top:14px">Waiting on the host to make the final call…</p>`}
       </div>
     </div>`;
 }

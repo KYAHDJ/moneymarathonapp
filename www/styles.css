@@ -250,6 +250,18 @@ input, select { font-family: inherit; }
 .privacyrow__v { font-weight: 600; color: var(--ink); }
 .privacyrow .dropdown--inline { color: var(--teal); font-weight: 700; }
 
+.hosttag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--gold-deep, var(--ink));
+  background: var(--gold-fill, var(--grid-soft));
+  padding: 2px 8px;
+  border-radius: 999px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
 .pooledtotal {
   text-align: center;
   font-size: 15px;
@@ -257,6 +269,109 @@ input, select { font-family: inherit; }
   margin: 0 0 16px;
 }
 .pooledtotal b { color: var(--ink); font-family: var(--mono); font-weight: 700; }
+
+/* ---------- savings calendar (bottom of Race Tracker) ---------- */
+
+.logcal { margin-top: 4px; margin-bottom: 24px; }
+
+.logcal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.logcal__head .section__label { margin: 0; flex: 0 0 auto; }
+.logcal__nav { display: flex; align-items: center; gap: 8px; }
+.logcal__navbtn {
+  width: 26px; height: 26px;
+  border-radius: 999px;
+  border: 1px solid var(--grid);
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.logcal__navbtn:hover { background: var(--grid-soft); }
+.logcal__month {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink-faint);
+  min-width: 108px;
+  text-align: center;
+}
+
+.logcal__panel {
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.logcal__weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  margin-bottom: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--ink-faint);
+  text-align: center;
+}
+
+.logcal__grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+
+.logcal__cell {
+  min-height: 46px;
+  border-radius: 8px;
+  background: var(--grid-soft);
+  padding: 4px 3px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+.logcal__cell--pad { background: transparent; }
+.logcal__cell--today { box-shadow: inset 0 0 0 1.5px var(--teal); }
+
+.logcal__daynum { font-size: 10px; color: var(--ink-faint); font-family: var(--mono); }
+
+.logcal__dots {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 2px;
+  max-width: 100%;
+}
+
+.logcal__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+.logcal__dot--on { background: var(--lane-fill, var(--teal)); }
+.logcal__dot--off {
+  background: transparent;
+  border: 1.5px solid var(--lane-fill, var(--red));
+  opacity: 0.75;
+}
+
+.logcal__legend {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px 16px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--ink-faint);
+  margin: 10px 0 0;
+}
+.logcal__legend .logcal__dot { margin-right: 2px; vertical-align: middle; }
 
 /* fixed to the bottom of the viewport, only shown on Race Tracker — it
    doesn't scroll away with the page content */
