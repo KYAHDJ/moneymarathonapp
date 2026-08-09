@@ -445,14 +445,70 @@ async function notifyNow(title, body) {
   } catch {}
 }
 
+/* savings-day reminder ids are date-based (y*10000 + m*100 + d), so they
+   always land under ~21,000,000 — filtering on that keeps this from also
+   wiping the separate inactivity-warning reminders below, which share the
+   same OS notification queue but live in a deliberately disjoint id range */
 async function cancelAllSavingsReminders() {
   const LN = window.Capacitor?.Plugins?.LocalNotifications;
   if (!LN) return;
   try {
     const pending = await LN.getPending();
-    if (pending?.notifications?.length) {
-      await LN.cancel({ notifications: pending.notifications.map((n) => ({ id: n.id })) });
-    }
+    const mine = (pending?.notifications || []).filter((n) => n.id < 100000000);
+    if (mine.length) await LN.cancel({ notifications: mine.map((n) => ({ id: n.id })) });
+  } catch {}
+}
+
+/* 90 days of total silence from a racer's own device is the signal their
+   account is genuinely abandoned (see expiresAt below) — these three give
+   fair warning before that happens, entirely offline: scheduled once, they
+   fire on the OS's own clock even if the app never opens again. */
+const EXPIRY_DAYS = 90;
+const nextExpiry = () => new Date(Date.now() + EXPIRY_DAYS * 86400000);
+const INACTIVITY_NOTIF_IDS = { d30: 500000001, d60: 500000002, d83: 500000003 };
+
+async function cancelInactivityReminders() {
+  const LN = window.Capacitor?.Plugins?.LocalNotifications;
+  if (!LN) return;
+  try {
+    await LN.cancel({ notifications: Object.values(INACTIVITY_NOTIF_IDS).map((id) => ({ id })) });
+  } catch {}
+}
+
+/* re-arms all three relative to right now — call this on anything that
+   counts as "still here," and the 90-day countdown genuinely restarts */
+async function syncInactivityReminders(tripName) {
+  const LN = window.Capacitor?.Plugins?.LocalNotifications;
+  if (!LN) return;
+  try {
+    let perm = await LN.checkPermissions();
+    if (perm.display !== "granted") perm = await LN.requestPermissions();
+    if (perm.display !== "granted") return;
+
+    await cancelInactivityReminders();
+
+    const label = tripName || "your race";
+    const now = Date.now();
+    const DAY = 86400000;
+    await LN.schedule({
+      notifications: [
+        {
+          id: INACTIVITY_NOTIF_IDS.d30, title: "Money Marathon",
+          body: `You haven't opened "${label}" in 30 days — keep saving so your spot doesn't expire.`,
+          schedule: { at: new Date(now + 30 * DAY), allowWhileIdle: true },
+        },
+        {
+          id: INACTIVITY_NOTIF_IDS.d60, title: "Money Marathon",
+          body: `60 days inactive on "${label}" — your racer will be erased if you don't come back soon.`,
+          schedule: { at: new Date(now + 60 * DAY), allowWhileIdle: true },
+        },
+        {
+          id: INACTIVITY_NOTIF_IDS.d83, title: "Money Marathon",
+          body: `1 week left — "${label}" will erase your racer profile in 7 days if you don't log back in.`,
+          schedule: { at: new Date(now + 83 * DAY), allowWhileIdle: true },
+        },
+      ],
+    });
   } catch {}
 }
 
@@ -784,6 +840,8 @@ function App() {
                 notifyNow("Money Marathon", "You were removed from the race by the host.");
                 localStorage.removeItem(LS_RACE);
                 localStorage.removeItem(lsRacer(raceId));
+                cancelAllSavingsReminders();
+                cancelInactivityReminders();
                 setTimeout(() => location.reload(), 1800);
               }
               return;
@@ -843,7 +901,13 @@ function App() {
     syncSavingsReminders(mine?.entries, race.currency, race.tripName);
   }, [myPlanSignature]);
 
-  /* splash covers both the very first cold start and every later "connecting" moment */
+  /* splash covers both the very first cold start and every later "connecting" moment.
+     Depends on a boolean, not the raw race object — race gets a brand new object
+     reference on every single snapshot (including ones from our own writes, like
+     the activity-touch heartbeat), and depending on that reference directly means
+     any write landing within the 260ms window re-runs this effect, whose cleanup
+     unconditionally clears the pending timeout with nothing left to replace it —
+     the splash would then never dismiss. A boolean only flips once. */
   useEffect(() => {
     if (race && race !== "missing" && !splashStarted.current) {
       splashStarted.current = true;
@@ -851,7 +915,7 @@ function App() {
       const t = setTimeout(() => setShowSplash(false), 260);
       return () => clearTimeout(t);
     }
-  }, [race]);
+  }, [!!race && race !== "missing"]);
 
   /* keep the right tab (and, for the profile steps, the right racer's page) mounted under the tour */
   useEffect(() => {
@@ -900,10 +964,12 @@ function App() {
             characters: DEFAULT_CHARACTERS,
             hostRacerId: racerId,
             createdAt: serverTimestamp(),
+            expiresAt: nextExpiry(),
           }),
           setDoc(racerRef(id, racerId), {
             name: creatorName || "", bank: "", characterId: DEFAULT_CHARACTERS[0]?.id || "",
             entries: [], order: 0, editAccess: "private", joinedSelf: true, createdAt: serverTimestamp(),
+            expiresAt: nextExpiry(),
           }),
         ]);
         localStorage.setItem(LS_RACE, id);
@@ -941,6 +1007,8 @@ function App() {
           { okLabel: "Yes, sync", cancelLabel: "No, that's someone else", danger: false }
         );
         if (sync) {
+          await guard(updateDoc(racerRef(id, match.id), { expiresAt: nextExpiry() }));
+          await guard(updateDoc(raceRef(id), { expiresAt: nextExpiry() }));
           localStorage.setItem(LS_RACE, id);
           localStorage.setItem(lsRacer(id), match.id);
           setRaceId(id);
@@ -958,7 +1026,9 @@ function App() {
         const racerId = newId(10);
         await setDoc(racerRef(id, racerId), {
           name: joinName, bank: "", characterId: "", entries: [], order, editAccess: "private", joinedSelf: true, createdAt: serverTimestamp(),
+          expiresAt: nextExpiry(),
         });
+        await updateDoc(raceRef(id), { expiresAt: nextExpiry() });
         localStorage.setItem(LS_RACE, id);
         localStorage.setItem(lsRacer(id), racerId);
         setRaceId(id);
@@ -990,6 +1060,7 @@ function App() {
     localStorage.removeItem(LS_RACE);
     localStorage.removeItem(lsRacer(raceId));
     await cancelAllSavingsReminders();
+    await cancelInactivityReminders();
     /* full reload instead of manual state teardown — guarantees a completely
        clean slate (listeners, refs, splash state) every time, like reopening the app */
     location.reload();
@@ -999,6 +1070,7 @@ function App() {
     localStorage.removeItem(LS_RACE);
     if (raceId) localStorage.removeItem(lsRacer(raceId));
     cancelAllSavingsReminders();
+    cancelInactivityReminders();
     location.reload();
   };
 
@@ -1013,6 +1085,7 @@ function App() {
     return guard(setDoc(racerRef(raceId, newId(10)), {
       name: "", bank: "", characterId: (race.characters?.[0]?.id) || "",
       entries: [], order, editAccess: "public", createdAt: serverTimestamp(),
+      expiresAt: nextExpiry(),
     }));
   };
 
@@ -1038,21 +1111,43 @@ function App() {
     return goal > 0 && newSaved >= goal ? { ...patch, finishedAt: serverTimestamp() } : patch;
   };
 
-  const addEntry = (r, entry) =>
-    patchRacer(r.id, withFinishedCheck(r, { entries: [...(r.entries || []), { id: newId(8), ...entry }] }));
+  /* keeps a racer's (and the whole race's) 90-day clock alive — bumped
+     alongside any real savings activity, regardless of who's device
+     actually tapped the button, since it's the RACER's account being
+     maintained that matters, not who happened to be holding the phone.
+     Only reschedules THIS device's own local reminders when it's actually
+     this device's own racer, since a warning about "your account" only
+     makes sense on the account owner's own phone. */
+  const touchActivity = (r) => {
+    guard(updateDoc(raceRef(raceId), { expiresAt: nextExpiry() }));
+    if (r.id === myRacerId) syncInactivityReminders(race?.tripName);
+  };
 
-  const toggleEntry = (r, eid) =>
-    patchRacer(r.id, withFinishedCheck(r, {
-      entries: (r.entries || []).map((e) => (e.id === eid ? { ...e, confirmed: !e.confirmed } : e)),
+  const addEntry = (r, entry) => {
+    touchActivity(r);
+    return patchRacer(r.id, withFinishedCheck(r, {
+      entries: [...(r.entries || []), { id: newId(8), ...entry }], expiresAt: nextExpiry(),
     }));
+  };
+
+  const toggleEntry = (r, eid) => {
+    touchActivity(r);
+    return patchRacer(r.id, withFinishedCheck(r, {
+      entries: (r.entries || []).map((e) => (e.id === eid ? { ...e, confirmed: !e.confirmed } : e)),
+      expiresAt: nextExpiry(),
+    }));
+  };
 
   const removeEntry = (r, eid) =>
     patchRacer(r.id, { entries: (r.entries || []).filter((e) => e.id !== eid) });
 
-  const editEntryAmount = (r, eid, amount) =>
-    patchRacer(r.id, withFinishedCheck(r, {
+  const editEntryAmount = (r, eid, amount) => {
+    touchActivity(r);
+    return patchRacer(r.id, withFinishedCheck(r, {
       entries: (r.entries || []).map((e) => (e.id === eid ? { ...e, amount: Math.round(Number(amount) || 0) } : e)),
+      expiresAt: nextExpiry(),
     }));
+  };
 
   const clearLog = async (r) => {
     if (!(await askConfirm(`Erase ${r.name || "this racer"}'s whole savings log? This can't be undone.`))) return;
@@ -1061,7 +1156,10 @@ function App() {
 
   /* GoalEditor already shows the "you'll differ from everyone else"
      warning every time it's opened, so this just saves */
-  const setGoal = (r, newGoal) => patchRacer(r.id, { goal: newGoal });
+  const setGoal = (r, newGoal) => {
+    touchActivity(r);
+    return patchRacer(r.id, { goal: newGoal, expiresAt: nextExpiry() });
+  };
 
   /* "public" lets anyone in the race edit this racer's own log — off by
      default (only the racer themself can), only the racer can flip it */
@@ -1076,6 +1174,7 @@ function App() {
      they're still considered "on the shared default" and stay eligible for
      future auto-adjust prompts; only an actual divergence opts them out. */
   const applySavingsPlan = (r, targetDate, cadence) => {
+    touchActivity(r);
     const remaining = Math.max(0, Math.round(racerGoal(r, race) - r.saved));
     const keep = (r.entries || []).filter((e) => !(e.source === "plan" && !e.confirmed));
     const sharedTarget = race?.targetDate || "";
@@ -1084,6 +1183,7 @@ function App() {
       targetDate, cadence,
       scheduleCustom: targetDate !== sharedTarget || cadence !== sharedCadence,
       scheduleAckVersion: Number(race?.scheduleVersion) || 0,
+      expiresAt: nextExpiry(),
     };
     if (targetDate && remaining > 0) {
       const dates = scheduleDates(targetDate, cadence);
@@ -1166,6 +1266,16 @@ function App() {
     prevHomeRef.current = { id: myRacer.id, home: myRacer.home };
   }, [myRacer?.id, myRacer?.home, myRacer?.rank]);
 
+  /* just opening the app to check in counts as "still here" too, not only
+     logging money — fires once per racer id, i.e. once per time this race
+     is opened, not on every re-render */
+  useEffect(() => {
+    if (!myRacer) return;
+    guard(updateDoc(racerRef(raceId, myRacer.id), { expiresAt: nextExpiry() }));
+    guard(updateDoc(raceRef(raceId), { expiresAt: nextExpiry() }));
+    syncInactivityReminders(race?.tripName);
+  }, [myRacer?.id]);
+
   const setDashboardAccess = (r, allowed) => patchRacer(r.id, { canEditDashboard: allowed });
 
   const transferAdmin = async (r) => {
@@ -1184,10 +1294,10 @@ function App() {
       await Promise.all(namedRows.map((r) =>
         guard(updateDoc(racerRef(raceId, r.id), {
           entries: [], targetDate: "", cadence: "every:1", finishedAt: null, finalVote: null,
-          scheduleCustom: false, scheduleAckVersion: 0,
+          scheduleCustom: false, scheduleAckVersion: 0, expiresAt: nextExpiry(),
         }))
       ));
-      await guard(updateDoc(raceRef(raceId), { raceResolved: false, scheduleVersion: 0 }));
+      await guard(updateDoc(raceRef(raceId), { raceResolved: false, scheduleVersion: 0, expiresAt: nextExpiry() }));
     } else {
       await Promise.all(namedRows.map((r) => guard(updateDoc(racerRef(raceId, r.id), { finalVote: null }))));
       await guard(updateDoc(raceRef(raceId), { raceResolved: true }));
