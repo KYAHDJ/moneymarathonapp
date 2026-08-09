@@ -334,17 +334,14 @@ async function hideAdBanner() {
 /* the "app open" slot — this plugin doesn't wrap AdMob's dedicated App
    Open ad format, so an interstitial fired right on resume is the standard
    stand-in every Capacitor app uses for that slot. Half the time, per the
-   ask — and a resume only ever fires coming BACK from background, never on
-   a cold start, so this never interrupts someone's very first open. A
-   short cooldown keeps rapid app-switching from stacking ads back to back. */
-let lastAppOpenAdAt = 0;
+   ask, uncapped — every single resume gets its own independent coin flip,
+   as many times as the app is backgrounded and reopened. A resume only
+   ever fires coming BACK from background though, never on a cold start,
+   so this never interrupts someone's very first open. */
 async function maybeShowAppOpenAd() {
-  const now = Date.now();
-  if (now - lastAppOpenAdAt < 3 * 60 * 1000) return;
   if (Math.random() >= 0.5) return;
   const AM = await ensureAdMobInit();
   if (!AM) return;
-  lastAppOpenAdAt = now;
   try {
     await AM.prepareInterstitial({ adId: ADMOB_INTERSTITIAL_ID, isTesting: ADMOB_TESTING });
     await AM.showInterstitial();
@@ -865,6 +862,11 @@ function App() {
     Promise.resolve(CapApp.addListener("resume", () => {
       resumeMusicFromBackground();
       maybeShowAppOpenAd();
+      /* the banner must survive a background/foreground cycle too — if we
+         left on a screen that strictly requires it, force it back the
+         moment the app is visible again instead of trusting it stayed up */
+      const onProfile = tabRef.current === "racewin" && !!detailRef.current;
+      if (tabRef.current === "dashboard" || onProfile) showAdBanner();
     })).then((h) => { resumeHandle = h; });
     return () => { pauseHandle?.remove(); resumeHandle?.remove(); };
   }, []);
@@ -872,12 +874,17 @@ function App() {
   /* warm up the ads SDK once, in the background — doesn't show anything yet */
   useEffect(() => { ensureAdMobInit(); }, []);
 
-  /* banner lives at the very bottom of the Dashboard and of a racer's own
-     profile page — nowhere else, never on the Race Tracker or gate screens */
+  /* the racer's own profile page (where the log lives) and the Dashboard
+     are the two screens that must show the banner strictly always, no
+     matter what — never the Race Tracker or gate screens. Re-asserting
+     showAdBanner() (not just once on the tab change) means a failed/expired
+     fill gets retried rather than silently leaving the slot blank. */
   useEffect(() => {
     const onProfile = tab === "racewin" && !!detailRacerId;
-    if (tab === "dashboard" || onProfile) showAdBanner();
-    else hideAdBanner();
+    if (tab !== "dashboard" && !onProfile) { hideAdBanner(); return; }
+    showAdBanner();
+    const retry = setInterval(showAdBanner, 30000);
+    return () => clearInterval(retry);
   }, [tab, detailRacerId]);
 
   /* sign in anonymously so the security rules have something to check */
@@ -1470,6 +1477,7 @@ function App() {
             onPatchRacer=${patchRacer}
             onAddRacer=${addRacer}
             onRemoveRacer=${removeRacer}
+            reallyOnline=${reallyOnline}
             say=${say} />`}
 
         ${tab === "racewin" && (
@@ -1769,7 +1777,7 @@ function Lane({ r, race, cur, isHost }) {
 
 /* ---------- HOME TAB — setup, racers, characters, leave ---------- */
 
-function HomeTab({ race, cur, rows, isAdmin, trueAdmin, hostRacerId, onPatchRace, onPatchRacer, onAddRacer, onRemoveRacer, say }) {
+function HomeTab({ race, cur, rows, isAdmin, trueAdmin, hostRacerId, onPatchRace, onPatchRacer, onAddRacer, onRemoveRacer, reallyOnline, say }) {
   const [form, setForm] = useState({ name: "", start: "", moving: "", finish: "" });
   const [uploading, setUploading] = useState({});
   const [cropTarget, setCropTarget] = useState(null);
@@ -1796,6 +1804,12 @@ function HomeTab({ race, cur, rows, isAdmin, trueAdmin, hostRacerId, onPatchRace
       setShakeN((n) => n + 1);
       navigator.vibrate?.(200);
       say("Fill in the character's name and all three poses before adding.", true);
+      return;
+    }
+    /* a rewarded ad genuinely cannot load with no connection — check up
+       front instead of letting the native SDK time out and fail on its own */
+    if (!reallyOnline) {
+      say("You need to be online to watch the ad and add a character.", true);
       return;
     }
     setAddAttempted(false);
@@ -1948,8 +1962,8 @@ function HomeTab({ race, cur, rows, isAdmin, trueAdmin, hostRacerId, onPatchRace
 
         <div style="margin-top:12px;display:flex;justify-content:center">
           ${addingCharacter
-            ? html`<button class="btn btn--go" disabled=${watchingAd} onClick=${addCharacter}>
-                ${watchingAd ? "Loading ad…" : "▶ Watch an ad to add"}</button>`
+            ? html`<button class="btn btn--go" disabled=${watchingAd || !reallyOnline} onClick=${addCharacter}>
+                ${watchingAd ? "Loading ad…" : !reallyOnline ? "Offline — connect to watch an ad" : "▶ Watch an ad to add"}</button>`
             : html`<button class="btn btn--go" onClick=${() => setAddingCharacter(true)}>+ Add character</button>`}
         </div>
       </section>
@@ -2407,6 +2421,43 @@ function GoalEditor({ value, sharedGoal, cur, onCommit }) {
     </div>`;
 }
 
+/* jsPDF loaded on demand from a CDN's auto-ESM endpoint — this app has no
+   build step/bundler, so there's nothing to npm-install into; jsdelivr's
+   `+esm` path wraps any npm package as a real ES module for a plain
+   `import()`, same trick as every other CDN import already in this file. */
+async function downloadSavingsPdf(r, race, cur, entries) {
+  const { jsPDF } = await import("https://cdn.jsdelivr.net/npm/jspdf@2.5.2/+esm");
+  const doc = new jsPDF();
+  const tripName = race.tripName || "Money Marathon";
+
+  doc.setFontSize(18);
+  doc.text(`${r.name}'s savings summary`, 14, 20);
+  doc.setFontSize(11);
+  doc.setTextColor(110);
+  doc.text(tripName, 14, 28);
+  doc.setTextColor(20);
+
+  doc.setFontSize(12);
+  doc.text(`Goal: ${money(r.effectiveGoal, cur)}`, 14, 42);
+  doc.text(`Saved so far: ${money(r.saved, cur)} (${Math.round(r.pct * 100)}%)`, 14, 50);
+
+  let y = 66;
+  doc.setFontSize(13);
+  doc.text(entries.length ? "Log" : "Nothing logged yet", 14, y);
+  y += 10;
+
+  doc.setFontSize(10);
+  entries.forEach((e) => {
+    if (y > 280) { doc.addPage(); y = 20; }
+    doc.text(prettyDate(e.date), 14, y);
+    doc.text(money(e.amount, cur), 70, y);
+    doc.text(e.confirmed ? "Logged" : "Not logged yet", 120, y);
+    y += 7;
+  });
+
+  doc.save(`${r.name || "racer"}-savings-summary.pdf`);
+}
+
 function RacerDetailPage({ r, race, cur, isOwner, isAdmin, isHost, onBack, onAddEntry, onToggleEntry, onRemoveEntry, onEditAmount, onApplyPlan, onClearLog, onSetGoal, onSetEditAccess, onSetDashboardAccess, onTransferAdmin, say }) {
   const [amount, setAmount] = useState("");
   const [date, setDate] = useState(today());
@@ -2430,20 +2481,16 @@ function RacerDetailPage({ r, race, cur, isOwner, isAdmin, isHost, onBack, onAdd
      have even if their spot ever expires from 90 days of inactivity.
      Web Share API works fine inside the Android WebView with no extra
      native plugin; falls back to the clipboard wherever it doesn't. */
-  const exportSummary = () => {
-    const lines = [
-      `${r.name}'s savings — ${race.tripName || "Money Marathon"}`,
-      `Goal: ${money(r.effectiveGoal, cur)}`,
-      `Saved so far: ${money(r.saved, cur)} (${Math.round(r.pct * 100)}%)`,
-      "",
-      entries.length ? "Log:" : "Nothing logged yet.",
-      ...entries.map((e) => `${prettyDate(e.date)} — ${money(e.amount, cur)} — ${e.confirmed ? "Logged" : "Not logged yet"}`),
-    ];
-    const text = lines.join("\n");
-    if (navigator.share) {
-      navigator.share({ title: `${r.name}'s savings summary`, text }).catch(() => {});
-    } else if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(text).then(() => say("Summary copied to clipboard")).catch(() => {});
+  const [exporting, setExporting] = useState(false);
+  const exportSummary = async () => {
+    setExporting(true);
+    try {
+      await downloadSavingsPdf(r, race, cur, entries);
+    } catch (e) {
+      console.error("PDF export failed:", e);
+      say("Couldn't build the PDF — try again", true);
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -2451,7 +2498,8 @@ function RacerDetailPage({ r, race, cur, isOwner, isAdmin, isHost, onBack, onAdd
     <div class=${`tab-panel lane--${laneClass(r)}`} style=${laneStyle(r)}>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;gap:8px">
         <button class="btn btn--sm btn--ghost" onClick=${onBack}>← Back to racers</button>
-        <button class="btn btn--sm btn--ghost" onClick=${exportSummary}>⤴ Export summary</button>
+        <button class="btn btn--sm btn--ghost" disabled=${exporting} onClick=${exportSummary}>
+          ${exporting ? "Building PDF…" : "⤴ Export as PDF"}</button>
       </div>
 
       <div class="detailcard">
