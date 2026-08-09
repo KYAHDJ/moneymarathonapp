@@ -12,6 +12,12 @@ android/.cxx/
 *.aab
 !apk/app-debug.apk
 
+# release signing — the keystore and its password are irreplaceable; losing
+# them means never being able to publish an update to this app again, and
+# leaking them means anyone else could. Never committed, ever.
+android/keystore.properties
+android/keystore/
+
 # IDE / tooling
 .idea/
 .claude/

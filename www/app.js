@@ -278,6 +278,85 @@ function resumeMusicFromBackground() {
   else startMusicIfNeeded();
 }
 
+/* ============================================================
+   ADS — @capacitor-community/admob, accessed the same way every other
+   native plugin in this file is: window.Capacitor.Plugins.X, no bundler
+   import, since this app has no build step.
+
+   PLACEHOLDERS: these are Google's own published test ad unit IDs — every
+   ad shown right now is explicitly labeled "Test Ad" by Google, never a
+   real one, and never earns anything. Swap these four constants for your
+   real ones from the AdMob console (after creating the app there) before
+   publishing — nothing else in this file needs to change to do that.
+   ============================================================ */
+
+/* the App ID itself (as opposed to these per-ad-unit IDs) lives in
+   android/app/src/main/AndroidManifest.xml, not here — same placeholder. */
+const ADMOB_BANNER_ID = "ca-app-pub-3940256099942544/6300978111";
+const ADMOB_INTERSTITIAL_ID = "ca-app-pub-3940256099942544/1033173712";
+const ADMOB_REWARDED_ID = "ca-app-pub-3940256099942544/5224354917";
+const ADMOB_TESTING = true; // flip to false once the four IDs above are your real ones
+
+let admobInitialized = false;
+async function ensureAdMobInit() {
+  const AM = window.Capacitor?.Plugins?.AdMob;
+  if (!AM || admobInitialized) return AM;
+  admobInitialized = true;
+  try { await AM.initialize({ initializeForTesting: ADMOB_TESTING }); } catch {}
+  return AM;
+}
+
+async function showAdBanner() {
+  const AM = await ensureAdMobInit();
+  if (!AM) return;
+  try {
+    await AM.showBanner({
+      adId: ADMOB_BANNER_ID, adSize: "ADAPTIVE_BANNER", position: "BOTTOM_CENTER", isTesting: ADMOB_TESTING,
+    });
+  } catch {}
+}
+async function hideAdBanner() {
+  const AM = window.Capacitor?.Plugins?.AdMob;
+  if (!AM) return;
+  try { await AM.hideBanner(); } catch {}
+}
+
+/* the "app open" slot — this plugin doesn't wrap AdMob's dedicated App
+   Open ad format, so an interstitial fired right on resume is the standard
+   stand-in every Capacitor app uses for that slot. Half the time, per the
+   ask — and a resume only ever fires coming BACK from background, never on
+   a cold start, so this never interrupts someone's very first open. A
+   short cooldown keeps rapid app-switching from stacking ads back to back. */
+let lastAppOpenAdAt = 0;
+async function maybeShowAppOpenAd() {
+  const now = Date.now();
+  if (now - lastAppOpenAdAt < 3 * 60 * 1000) return;
+  if (Math.random() >= 0.5) return;
+  const AM = await ensureAdMobInit();
+  if (!AM) return;
+  lastAppOpenAdAt = now;
+  try {
+    await AM.prepareInterstitial({ adId: ADMOB_INTERSTITIAL_ID, isTesting: ADMOB_TESTING });
+    await AM.showInterstitial();
+  } catch {}
+}
+
+/* used to gate adding a new character — resolves true once the reward is
+   actually granted. No AdMob plugin present (browser testing) never blocks
+   the feature, it just skips straight to "rewarded" so dev/testing isn't
+   stuck behind a native-only ad. */
+async function showRewardedAd() {
+  const AM = await ensureAdMobInit();
+  if (!AM) return true;
+  try {
+    await AM.prepareRewardVideoAd({ adId: ADMOB_REWARDED_ID, isTesting: ADMOB_TESTING });
+    const result = await AM.showRewardVideoAd();
+    return !!result;
+  } catch {
+    return false;
+  }
+}
+
 /* soft 1s fade at the loop seam instead of an abrupt native loop restart */
 bgMusic.addEventListener("timeupdate", () => {
   if (!bgMusic.duration || !soundPrefs.musicOn) return;
@@ -773,9 +852,23 @@ function App() {
     }
     let pauseHandle, resumeHandle;
     Promise.resolve(CapApp.addListener("pause", pauseMusicForBackground)).then((h) => { pauseHandle = h; });
-    Promise.resolve(CapApp.addListener("resume", resumeMusicFromBackground)).then((h) => { resumeHandle = h; });
+    Promise.resolve(CapApp.addListener("resume", () => {
+      resumeMusicFromBackground();
+      maybeShowAppOpenAd();
+    })).then((h) => { resumeHandle = h; });
     return () => { pauseHandle?.remove(); resumeHandle?.remove(); };
   }, []);
+
+  /* warm up the ads SDK once, in the background — doesn't show anything yet */
+  useEffect(() => { ensureAdMobInit(); }, []);
+
+  /* banner lives at the very bottom of the Dashboard and of a racer's own
+     profile page — nowhere else, never on the Race Tracker or gate screens */
+  useEffect(() => {
+    const onProfile = tab === "racewin" && !!detailRacerId;
+    if (tab === "dashboard" || onProfile) showAdBanner();
+    else hideAdBanner();
+  }, [tab, detailRacerId]);
 
   /* sign in anonymously so the security rules have something to check */
   useEffect(() => {
@@ -1386,7 +1479,8 @@ function App() {
                     onSetGoal=${(g) => setGoal(activeRow, g)}
                     onSetEditAccess=${(v) => setEditAccess(activeRow, v)}
                     onSetDashboardAccess=${(v) => setDashboardAccess(activeRow, v)}
-                    onTransferAdmin=${() => transferAdmin(activeRow)} />`
+                    onTransferAdmin=${() => transferAdmin(activeRow)}
+                    say=${say} />`
                 : html`<div class="tab-panel"><div class="empty">This racer was removed.</div>
                     <button class="btn" onClick=${() => setDetailRacerId(null)}>← Back</button></div>`)
             : html`
@@ -1672,6 +1766,7 @@ function HomeTab({ race, cur, rows, isAdmin, trueAdmin, hostRacerId, onPatchRace
   const [addAttempted, setAddAttempted] = useState(false);
   const [shakeN, setShakeN] = useState(0);
   const [addingCharacter, setAddingCharacter] = useState(false);
+  const [watchingAd, setWatchingAd] = useState(false);
   const characters = race.characters || [];
   const busy = !!cropTarget || Object.values(uploading).some(Boolean);
 
@@ -1683,7 +1778,9 @@ function HomeTab({ race, cur, rows, isAdmin, trueAdmin, hostRacerId, onPatchRace
   };
   const showInvalid = addAttempted;
 
-  const addCharacter = () => {
+  /* one ad, watched in full, per character added — free forever, but this
+     is the one thing that costs a watch instead of being unlimited */
+  const addCharacter = async () => {
     if (Object.values(missing).some(Boolean)) {
       setAddAttempted(true);
       setShakeN((n) => n + 1);
@@ -1692,6 +1789,10 @@ function HomeTab({ race, cur, rows, isAdmin, trueAdmin, hostRacerId, onPatchRace
       return;
     }
     setAddAttempted(false);
+    setWatchingAd(true);
+    const rewarded = await showRewardedAd();
+    setWatchingAd(false);
+    if (!rewarded) { say("Watch the full ad to add this character.", true); return; }
     onPatchRace({ characters: [...characters, { id: newId(8), ...form }] });
     setForm({ name: "", start: "", moving: "", finish: "" });
     setAddingCharacter(false);
@@ -1837,7 +1938,8 @@ function HomeTab({ race, cur, rows, isAdmin, trueAdmin, hostRacerId, onPatchRace
 
         <div style="margin-top:12px;display:flex;justify-content:center">
           ${addingCharacter
-            ? html`<button class="btn btn--go" onClick=${addCharacter}>✓ Add character</button>`
+            ? html`<button class="btn btn--go" disabled=${watchingAd} onClick=${addCharacter}>
+                ${watchingAd ? "Loading ad…" : "▶ Watch an ad to add"}</button>`
             : html`<button class="btn btn--go" onClick=${() => setAddingCharacter(true)}>+ Add character</button>`}
         </div>
       </section>
@@ -2293,7 +2395,7 @@ function GoalEditor({ value, sharedGoal, cur, onCommit }) {
     </div>`;
 }
 
-function RacerDetailPage({ r, race, cur, isOwner, isAdmin, isHost, onBack, onAddEntry, onToggleEntry, onRemoveEntry, onEditAmount, onApplyPlan, onClearLog, onSetGoal, onSetEditAccess, onSetDashboardAccess, onTransferAdmin }) {
+function RacerDetailPage({ r, race, cur, isOwner, isAdmin, isHost, onBack, onAddEntry, onToggleEntry, onRemoveEntry, onEditAmount, onApplyPlan, onClearLog, onSetGoal, onSetEditAccess, onSetDashboardAccess, onTransferAdmin, say }) {
   const [amount, setAmount] = useState("");
   const [date, setDate] = useState(today());
 
@@ -2312,9 +2414,33 @@ function RacerDetailPage({ r, race, cur, isOwner, isAdmin, isHost, onBack, onAdd
     setDate(today());
   };
 
+  /* a plain-text receipt of this racer's own log — something they still
+     have even if their spot ever expires from 90 days of inactivity.
+     Web Share API works fine inside the Android WebView with no extra
+     native plugin; falls back to the clipboard wherever it doesn't. */
+  const exportSummary = () => {
+    const lines = [
+      `${r.name}'s savings — ${race.tripName || "Money Marathon"}`,
+      `Goal: ${money(r.effectiveGoal, cur)}`,
+      `Saved so far: ${money(r.saved, cur)} (${Math.round(r.pct * 100)}%)`,
+      "",
+      entries.length ? "Log:" : "Nothing logged yet.",
+      ...entries.map((e) => `${prettyDate(e.date)} — ${money(e.amount, cur)} — ${e.confirmed ? "Logged" : "Not logged yet"}`),
+    ];
+    const text = lines.join("\n");
+    if (navigator.share) {
+      navigator.share({ title: `${r.name}'s savings summary`, text }).catch(() => {});
+    } else if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(() => say("Summary copied to clipboard")).catch(() => {});
+    }
+  };
+
   return html`
     <div class=${`tab-panel lane--${laneClass(r)}`} style=${laneStyle(r)}>
-      <button class="btn btn--sm btn--ghost" onClick=${onBack} style="margin-bottom:14px">← Back to racers</button>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;gap:8px">
+        <button class="btn btn--sm btn--ghost" onClick=${onBack}>← Back to racers</button>
+        <button class="btn btn--sm btn--ghost" onClick=${exportSummary}>⤴ Export summary</button>
+      </div>
 
       <div class="detailcard">
         <div class="detailcard__banner">${r.name}${isHost ? html` <span class="hosttag">Admin/Host</span>` : ""}${r.home ? " 🏁" : ""}</div>

@@ -24,9 +24,21 @@ service cloud.firestore {
         && (!('tripName' in request.resource.data) || (request.resource.data.tripName is string && request.resource.data.tripName.size() < 200))
         && (!('goal' in request.resource.data) || (request.resource.data.goal is number && request.resource.data.goal >= 0))
         && (!('currency' in request.resource.data) || (request.resource.data.currency is string && request.resource.data.currency.size() < 10))
-        && (!('characters' in request.resource.data) || request.resource.data.characters is list);
+        && (!('characters' in request.resource.data) || request.resource.data.characters is list)
+        && (!('hostRacerId' in request.resource.data) || request.resource.data.hostRacerId is string)
+        && (!('targetDate' in request.resource.data) || request.resource.data.targetDate is string)
+        && (!('cadence' in request.resource.data) || request.resource.data.cadence is string)
+        && (!('scheduleVersion' in request.resource.data) || request.resource.data.scheduleVersion is number)
+        && (!('raceResolved' in request.resource.data) || request.resource.data.raceResolved is bool)
+        && (!('expiresAt' in request.resource.data) || request.resource.data.expiresAt is timestamp);
 
-      allow delete: if false;
+      // a race with nobody left in it deletes itself (last racer leaving/
+      // getting kicked) — this was accidentally locked to `false` before,
+      // which silently broke that cleanup. TTL-based expiry deletes are
+      // performed by Firestore's own backend and aren't subject to these
+      // rules either way, so this only governs the app's own client-side
+      // "nobody's left" cleanup.
+      allow delete: if request.auth != null;
 
       match /racers/{racerId} {
         allow read: if request.auth != null;
@@ -35,7 +47,20 @@ service cloud.firestore {
           && (!('name' in request.resource.data) || (request.resource.data.name is string && request.resource.data.name.size() < 100))
           && (!('bank' in request.resource.data) || (request.resource.data.bank is string && request.resource.data.bank.size() < 100))
           && (!('entries' in request.resource.data) || (request.resource.data.entries is list && request.resource.data.entries.size() < 500))
-          && (!('order' in request.resource.data) || request.resource.data.order is number);
+          && (!('order' in request.resource.data) || request.resource.data.order is number)
+          && (!('characterId' in request.resource.data) || request.resource.data.characterId is string)
+          && (!('color' in request.resource.data) || request.resource.data.color is string)
+          && (!('editAccess' in request.resource.data) || request.resource.data.editAccess is string)
+          && (!('joinedSelf' in request.resource.data) || request.resource.data.joinedSelf is bool)
+          && (!('goal' in request.resource.data) || request.resource.data.goal is number)
+          && (!('canEditDashboard' in request.resource.data) || request.resource.data.canEditDashboard is bool)
+          && (!('targetDate' in request.resource.data) || request.resource.data.targetDate is string)
+          && (!('cadence' in request.resource.data) || request.resource.data.cadence is string)
+          && (!('scheduleCustom' in request.resource.data) || request.resource.data.scheduleCustom is bool)
+          && (!('scheduleAckVersion' in request.resource.data) || request.resource.data.scheduleAckVersion is number)
+          && (!('finalVote' in request.resource.data) || request.resource.data.finalVote == null || request.resource.data.finalVote is string)
+          && (!('finishedAt' in request.resource.data) || request.resource.data.finishedAt == null || request.resource.data.finishedAt is timestamp)
+          && (!('expiresAt' in request.resource.data) || request.resource.data.expiresAt is timestamp);
 
         allow delete: if request.auth != null;
       }
