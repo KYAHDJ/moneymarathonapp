@@ -831,7 +831,7 @@ function App() {
           }),
           setDoc(racerRef(id, racerId), {
             name: creatorName || "", bank: "", characterId: DEFAULT_CHARACTERS[0]?.id || "",
-            entries: [], order: 0, createdAt: serverTimestamp(),
+            entries: [], order: 0, editAccess: "private", createdAt: serverTimestamp(),
           }),
         ]);
         localStorage.setItem(LS_RACE, id);
@@ -855,7 +855,7 @@ function App() {
         const order = existing.size ? Math.max(...existing.docs.map((d) => d.data().order || 0)) + 1 : 0;
         const racerId = newId(10);
         await setDoc(racerRef(id, racerId), {
-          name, bank: "", characterId: "", entries: [], order, createdAt: serverTimestamp(),
+          name, bank: "", characterId: "", entries: [], order, editAccess: "private", createdAt: serverTimestamp(),
         });
         localStorage.setItem(LS_RACE, id);
         localStorage.setItem(lsRacer(id), racerId);
@@ -888,11 +888,14 @@ function App() {
   const patchRace = (patch) => guard(updateDoc(raceRef(raceId), patch));
   const patchRacer = (rid, patch) => guard(updateDoc(racerRef(raceId, rid), patch));
 
+  /* a lane added here has no owning device yet — leave it open to everyone
+     until whoever it's for takes it over, unlike joining (which is always
+     "only me" since it's tied to your own device from the start) */
   const addRacer = () => {
     const order = racers.length ? Math.max(...racers.map((r) => r.order || 0)) + 1 : 0;
     return guard(setDoc(racerRef(raceId, newId(10)), {
       name: "", bank: "", characterId: (race.characters?.[0]?.id) || "",
-      entries: [], order, createdAt: serverTimestamp(),
+      entries: [], order, editAccess: "public", createdAt: serverTimestamp(),
     }));
   };
 
