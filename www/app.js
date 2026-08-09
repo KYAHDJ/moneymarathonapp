@@ -421,6 +421,21 @@ const paymentsUntil = (iso, cadenceId) => scheduleDates(iso, cadenceId).length;
 
 const REMINDER_HOUR = 9; // 9am local time on each scheduled day
 
+/* fires right away — no schedule.at means "now" — for real-time race
+   events (someone joined/left) rather than a scheduled reminder. Purely a
+   device notification alongside the in-app toast, so it's noticed even
+   while the app is backgrounded; never blocks on permission being denied. */
+async function notifyNow(title, body) {
+  const LN = window.Capacitor?.Plugins?.LocalNotifications;
+  if (!LN) return;
+  try {
+    let perm = await LN.checkPermissions();
+    if (perm.display !== "granted") perm = await LN.requestPermissions();
+    if (perm.display !== "granted") return;
+    await LN.schedule({ notifications: [{ id: Date.now() % 2147483647, title, body }] });
+  } catch {}
+}
+
 async function cancelAllSavingsReminders() {
   const LN = window.Capacitor?.Plugins?.LocalNotifications;
   if (!LN) return;
@@ -730,10 +745,16 @@ function App() {
           const prevById = new Map(prev.map((r) => [r.id, r]));
           const nextById = new Map(next.map((r) => [r.id, r]));
           next.forEach((r) => {
-            if (!prevById.has(r.id) && (r.name || "").trim() && r.id !== myId) say(`${r.name} joined the race`);
+            if (!prevById.has(r.id) && (r.name || "").trim() && r.id !== myId) {
+              say(`${r.name} joined the race`);
+              notifyNow("Money Marathon", `${r.name} joined the race`);
+            }
           });
           prev.forEach((r) => {
-            if (!nextById.has(r.id) && (r.name || "").trim() && r.id !== myId) say(`${r.name} left the race`);
+            if (!nextById.has(r.id) && (r.name || "").trim() && r.id !== myId) {
+              say(`${r.name} left the race`);
+              notifyNow("Money Marathon", `${r.name} left the race`);
+            }
           });
           next.forEach((r) => {
             if (r.id === myId) return;
@@ -831,7 +852,7 @@ function App() {
           }),
           setDoc(racerRef(id, racerId), {
             name: creatorName || "", bank: "", characterId: DEFAULT_CHARACTERS[0]?.id || "",
-            entries: [], order: 0, editAccess: "private", createdAt: serverTimestamp(),
+            entries: [], order: 0, editAccess: "private", joinedSelf: true, createdAt: serverTimestamp(),
           }),
         ]);
         localStorage.setItem(LS_RACE, id);
@@ -855,7 +876,7 @@ function App() {
         const order = existing.size ? Math.max(...existing.docs.map((d) => d.data().order || 0)) + 1 : 0;
         const racerId = newId(10);
         await setDoc(racerRef(id, racerId), {
-          name, bank: "", characterId: "", entries: [], order, editAccess: "private", createdAt: serverTimestamp(),
+          name, bank: "", characterId: "", entries: [], order, editAccess: "private", joinedSelf: true, createdAt: serverTimestamp(),
         });
         localStorage.setItem(LS_RACE, id);
         localStorage.setItem(lsRacer(id), racerId);
@@ -869,6 +890,14 @@ function App() {
   const leaveRace = async () => {
     if (!(await askConfirm("Leave this race? You'll be removed from the track — everyone else keeps racing.", { okLabel: "Yes, leave" }))) return;
     const myRacerId = localStorage.getItem(lsRacer(raceId));
+    /* the host leaving hands admin to whoever joined next — the race
+       shouldn't end up with no one able to touch its setup */
+    if (myRacerId && race && race !== "missing" && race.hostRacerId === myRacerId) {
+      const next = [...rows]
+        .filter((r) => r.id !== myRacerId)
+        .sort((a, b) => (a.order || 0) - (b.order || 0))[0];
+      if (next) await guard(updateDoc(raceRef(raceId), { hostRacerId: next.id }));
+    }
     if (myRacerId) await guard(deleteDoc(racerRef(raceId, myRacerId)));
     localStorage.removeItem(LS_RACE);
     localStorage.removeItem(lsRacer(raceId));
@@ -899,26 +928,39 @@ function App() {
     }));
   };
 
+  /* a racer who joined on their own can only remove themselves, via Leave —
+     not even the host can delete them from Dashboard. Lanes the host added
+     (never claimed by a device) stay removable, since nobody "owns" them. */
   const removeRacer = async (r) => {
+    if (r.joinedSelf) { say(`${r.name || "This racer"} joined on their own — only they can remove themselves.`, true); return; }
     if (!(await askConfirm(`Remove ${r.name || "this racer"} and their whole savings log? This can't be undone.`))) return;
     return guard(deleteDoc(racerRef(raceId, r.id)));
   };
 
+  /* records the moment a racer first reaches their goal — used to break
+     podium ties by who actually finished first, not join order or name */
+  const withFinishedCheck = (r, patch) => {
+    if (r.finishedAt || !patch.entries) return patch;
+    const newSaved = patch.entries.filter((e) => e.confirmed).reduce((s, e) => s + Number(e.amount || 0), 0);
+    const goal = racerGoal(r, race);
+    return goal > 0 && newSaved >= goal ? { ...patch, finishedAt: serverTimestamp() } : patch;
+  };
+
   const addEntry = (r, entry) =>
-    patchRacer(r.id, { entries: [...(r.entries || []), { id: newId(8), ...entry }] });
+    patchRacer(r.id, withFinishedCheck(r, { entries: [...(r.entries || []), { id: newId(8), ...entry }] }));
 
   const toggleEntry = (r, eid) =>
-    patchRacer(r.id, {
+    patchRacer(r.id, withFinishedCheck(r, {
       entries: (r.entries || []).map((e) => (e.id === eid ? { ...e, confirmed: !e.confirmed } : e)),
-    });
+    }));
 
   const removeEntry = (r, eid) =>
     patchRacer(r.id, { entries: (r.entries || []).filter((e) => e.id !== eid) });
 
   const editEntryAmount = (r, eid, amount) =>
-    patchRacer(r.id, {
+    patchRacer(r.id, withFinishedCheck(r, {
       entries: (r.entries || []).map((e) => (e.id === eid ? { ...e, amount: Math.round(Number(amount) || 0) } : e)),
-    });
+    }));
 
   const clearLog = async (r) => {
     if (!(await askConfirm(`Erase ${r.name || "this racer"}'s whole savings log? This can't be undone.`))) return;
@@ -970,8 +1012,16 @@ function App() {
       return { ...r, slot: i + 1, saved, planned, effectiveGoal, pct, home: pct >= 1 };
     });
     const named = base.filter((r) => (r.name || "").trim());
+    /* ties go to whoever actually finished first (by timestamp), not join
+       order or name — join order is only a last-resort tiebreak for people
+       who are still tied and neither has finished yet */
+    const finishedAtMs = (r) => (r.finishedAt?.toMillis ? r.finishedAt.toMillis() : Infinity);
     [...named]
-      .sort((a, b) => b.pct - a.pct || a.slot - b.slot)
+      .sort((a, b) => {
+        if (b.pct !== a.pct) return b.pct - a.pct;
+        if (a.home && b.home) return finishedAtMs(a) - finishedAtMs(b);
+        return a.slot - b.slot;
+      })
       .forEach((r, i) => { r.rank = i + 1; });
     return base;
   }, [racers, goal]);
@@ -989,6 +1039,18 @@ function App() {
   const hostRacerId = (race && race !== "missing" && race.hostRacerId)
     || [...rows].sort((a, b) => (a.order || 0) - (b.order || 0))[0]?.id;
   const isAdmin = !!myRacerId && myRacerId === hostRacerId;
+  const myRacer = rows.find((r) => r.id === myRacerId) || null;
+  /* the host can also just grant Dashboard access to specific people
+     without handing over the whole admin role */
+  const canEditDashboard = isAdmin || myRacer?.canEditDashboard === true;
+
+  const setDashboardAccess = (r, allowed) => patchRacer(r.id, { canEditDashboard: allowed });
+
+  const transferAdmin = async (r) => {
+    if (!(await askConfirm(`Make ${r.name || "this racer"} the race host? They'll be able to edit race setup, the racer list, and the character library — you'll lose that unless they hand it back.`,
+      { okLabel: "Transfer" }))) return;
+    return guard(updateDoc(raceRef(raceId), { hostRacerId: r.id }));
+  };
 
   /* ---------- screens ---------- */
 
@@ -1034,7 +1096,7 @@ function App() {
         ${tab === "dashboard" && html`
           <button class="backbtn" onClick=${goBack}>← Back</button>
           <${HomeTab}
-            race=${race} cur=${cur} rows=${rows} isAdmin=${isAdmin}
+            race=${race} cur=${cur} rows=${rows} isAdmin=${canEditDashboard}
             onPatchRace=${patchRace}
             onPatchRacer=${patchRacer}
             onAddRacer=${addRacer}
@@ -1044,8 +1106,9 @@ function App() {
         ${tab === "racewin" && (
           detailRacerId
             ? (activeRow
-                ? html`<${RacerDetailPage} r=${activeRow} race=${race} cur=${cur}
+                ? html`<${RacerDetailPage} r=${activeRow} race=${race} cur=${cur} rows=${rows}
                     isOwner=${activeRow.id === myRacerId}
+                    isAdmin=${isAdmin}
                     onBack=${() => setDetailRacerId(null)}
                     onAddEntry=${(e) => addEntry(activeRow, e)}
                     onToggleEntry=${(eid) => toggleEntry(activeRow, eid)}
@@ -1054,7 +1117,9 @@ function App() {
                     onApplyPlan=${(t, c) => applySavingsPlan(activeRow, t, c)}
                     onClearLog=${() => clearLog(activeRow)}
                     onSetGoal=${(g) => setGoal(activeRow, g)}
-                    onSetEditAccess=${(v) => setEditAccess(activeRow, v)} />`
+                    onSetEditAccess=${(v) => setEditAccess(activeRow, v)}
+                    onSetDashboardAccess=${(v) => setDashboardAccess(activeRow, v)}
+                    onTransferAdmin=${() => transferAdmin(activeRow)} />`
                 : html`<div class="tab-panel"><div class="empty">This racer was removed.</div>
                     <button class="btn" onClick=${() => setDetailRacerId(null)}>← Back</button></div>`)
             : html`
@@ -1486,7 +1551,7 @@ function RacerIdentityRow({ r, race, onPatch, onRemove }) {
           options=${[{ value: "", label: "No character" }, ...(race.characters || []).map((c) => ({ value: c.id, label: c.name }))]}
           onChange=${(v) => onPatch({ characterId: v })} />
         <${ColorPicker} value=${r.color || ""} onChange=${(v) => onPatch({ color: v })} />
-        <button class="racercard__remove" onClick=${onRemove} aria-label="Remove racer">×</button>
+        ${!r.joinedSelf && html`<button class="racercard__remove" onClick=${onRemove} aria-label="Remove racer">×</button>`}
       </div>
     </div>`;
 }
@@ -1792,7 +1857,7 @@ function GoalEditor({ value, sharedGoal, cur, onCommit }) {
     </div>`;
 }
 
-function RacerDetailPage({ r, race, cur, isOwner, onBack, onAddEntry, onToggleEntry, onRemoveEntry, onEditAmount, onApplyPlan, onClearLog, onSetGoal, onSetEditAccess }) {
+function RacerDetailPage({ r, race, cur, isOwner, isAdmin, onBack, onAddEntry, onToggleEntry, onRemoveEntry, onEditAmount, onApplyPlan, onClearLog, onSetGoal, onSetEditAccess, onSetDashboardAccess, onTransferAdmin }) {
   const [amount, setAmount] = useState("");
   const [date, setDate] = useState(today());
 
@@ -1848,6 +1913,19 @@ function RacerDetailPage({ r, race, cur, isOwner, onBack, onAddEntry, onToggleEn
                   onChange=${onSetEditAccess} />`
               : html`<span class="privacyrow__v">${r.editAccess === "public" ? "Everyone" : `Only ${r.name}`}</span>`}
           </div>
+
+          ${isAdmin && !isOwner && html`
+            <div class="privacyrow" style="margin-top:10px">
+              <span class="privacyrow__k">Let ${r.name || "them"} edit the Dashboard?</span>
+              <${Dropdown} className="dropdown--inline" value=${r.canEditDashboard ? "yes" : "no"}
+                ariaLabel="Allow editing the Dashboard"
+                options=${[{ value: "no", label: "No" }, { value: "yes", label: "Yes" }]}
+                onChange=${(v) => onSetDashboardAccess(v === "yes")} />
+            </div>
+            <div style="margin-top:10px">
+              <button class="btn btn--sm btn--go" style="width:100%" onClick=${onTransferAdmin}>Make ${r.name || "them"} the race host</button>
+            </div>
+          `}
 
           ${!canEdit && html`<p class="adminlock" style="margin-top:12px">This is ${r.name}'s profile — only they can log or edit their savings.</p>`}
           <div class=${canEdit ? "" : "adminlock__area"}>
