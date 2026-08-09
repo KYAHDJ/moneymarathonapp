@@ -291,11 +291,21 @@ function resumeMusicFromBackground() {
    ============================================================ */
 
 /* the App ID itself (as opposed to these per-ad-unit IDs) lives in
-   android/app/src/main/AndroidManifest.xml, not here — same placeholder. */
-const ADMOB_BANNER_ID = "ca-app-pub-3940256099942544/6300978111";
-const ADMOB_INTERSTITIAL_ID = "ca-app-pub-3940256099942544/1033173712";
-const ADMOB_REWARDED_ID = "ca-app-pub-3940256099942544/5224354917";
-const ADMOB_TESTING = true; // flip to false once the four IDs above are your real ones
+   android/app/src/main/AndroidManifest.xml, not here — that one's already
+   your real one. These three are now real too.
+
+   ADMOB_TESTING stays true a little longer on purpose: it forces Google's
+   SDK-level test-ad flag on every request, which is what actually keeps a
+   request "safe" (a real ad unit ID + this flag still shows Google's own
+   sample ad content, so nobody tapping around pre-launch — including you —
+   risks generating billable clicks on your own live inventory, which is
+   exactly the kind of "invalid traffic" AdMob suspends accounts over).
+   Flip this to false only right when you're actually ready to submit —
+   that's the one line that turns real ads on for real. */
+const ADMOB_BANNER_ID = "ca-app-pub-9372606273046322/9522907425";
+const ADMOB_INTERSTITIAL_ID = "ca-app-pub-9372606273046322/5534581013";
+const ADMOB_REWARDED_ID = "ca-app-pub-9372606273046322/3033520698";
+const ADMOB_TESTING = true;
 
 let admobInitialized = false;
 async function ensureAdMobInit() {
