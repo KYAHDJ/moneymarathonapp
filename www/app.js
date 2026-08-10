@@ -283,29 +283,17 @@ function resumeMusicFromBackground() {
    native plugin in this file is: window.Capacitor.Plugins.X, no bundler
    import, since this app has no build step.
 
-   PLACEHOLDERS: these are Google's own published test ad unit IDs — every
-   ad shown right now is explicitly labeled "Test Ad" by Google, never a
-   real one, and never earns anything. Swap these four constants for your
-   real ones from the AdMob console (after creating the app there) before
-   publishing — nothing else in this file needs to change to do that.
-   ============================================================ */
-
-/* the App ID itself (as opposed to these per-ad-unit IDs) lives in
-   android/app/src/main/AndroidManifest.xml, not here — that one's already
-   your real one. These three are now real too.
-
-   ADMOB_TESTING stays true a little longer on purpose: it forces Google's
-   SDK-level test-ad flag on every request, which is what actually keeps a
-   request "safe" (a real ad unit ID + this flag still shows Google's own
-   sample ad content, so nobody tapping around pre-launch — including you —
-   risks generating billable clicks on your own live inventory, which is
-   exactly the kind of "invalid traffic" AdMob suspends accounts over).
-   Flip this to false only right when you're actually ready to submit —
-   that's the one line that turns real ads on for real. */
+   Three ad experiences only: a rewarded ad to unlock adding a character,
+   a banner strictly always up on the Dashboard and a racer's own profile,
+   and an app-open ad (uses AdMob's Interstitial ad type under the hood —
+   this plugin doesn't wrap the dedicated App Open format — but it only
+   ever fires from the resume handler, there's no separate/extra
+   interstitial anywhere else in this file). All three IDs are real, and
+   ADMOB_TESTING is off — these are live. */
 const ADMOB_BANNER_ID = "ca-app-pub-9372606273046322/9522907425";
 const ADMOB_INTERSTITIAL_ID = "ca-app-pub-9372606273046322/5534581013";
 const ADMOB_REWARDED_ID = "ca-app-pub-9372606273046322/3033520698";
-const ADMOB_TESTING = true;
+const ADMOB_TESTING = false;
 
 let admobInitialized = false;
 async function ensureAdMobInit() {
@@ -776,6 +764,7 @@ function App() {
      the real signal, and the only one that stays honest on a slow connection. */
   const [firestoreOnline, setFirestoreOnline] = useState(true);
   const [showSyncModal, setShowSyncModal] = useState(false);
+  const [manualVoteOpen, setManualVoteOpen] = useState(false);
   const wasOfflineRef = useRef(false);
   const prevHomeRef = useRef({ id: null, home: null });
   const prevRacersRef = useRef(null);
@@ -1443,6 +1432,7 @@ function App() {
       await Promise.all(namedRows.map((r) => guard(updateDoc(racerRef(raceId, r.id), { finalVote: null }))));
       await guard(updateDoc(raceRef(raceId), { raceResolved: true }));
     }
+    setManualVoteOpen(false);
   };
 
   /* anyone still on the shared default (never set their own save-by date
@@ -1465,6 +1455,7 @@ function App() {
      explicit tap, not a forced interruption, so it can coexist. */
   const activeModal = congrats ? "congrats"
     : showFinalModal ? "final"
+    : manualVoteOpen ? "manualVote"
     : pendingScheduleSync ? "scheduleSync"
     : showSyncModal ? "backOnline"
     : tutorial.phase === "welcome" ? "tutorialWelcome"
@@ -1554,6 +1545,7 @@ function App() {
                   onLeave=${leaveRace}
                   onReplayTutorial=${replayTutorial}
                   onOpenSound=${() => setShowSound(true)}
+                  onOpenVote=${() => setManualVoteOpen(true)}
                   say=${say} />`
         )}
       </div>
@@ -1576,6 +1568,9 @@ function App() {
       ${activeModal === "congrats" && html`<${CongratsModal} rank=${congrats.rank} onDismiss=${() => setCongrats(null)} />`}
       ${activeModal === "final" && html`<${FinalRaceModal} rows=${namedRows} isAdmin=${isAdmin}
         myRacerId=${myRacerId} onVote=${voteFinal} onResolve=${resolveFinalRace} />`}
+      ${activeModal === "manualVote" && html`<${FinalRaceModal} rows=${namedRows} isAdmin=${isAdmin}
+        myRacerId=${myRacerId} onVote=${voteFinal} onResolve=${resolveFinalRace}
+        onClose=${() => setManualVoteOpen(false)} isEarly=${!allFinished} />`}
       ${activeModal === "scheduleSync" && html`<${ScheduleSyncModal} race=${race}
         onAccept=${acceptScheduleSync} onDecline=${declineScheduleSync} />`}
       ${activeModal === "backOnline" && html`
@@ -2305,7 +2300,7 @@ function BankPicker({ value, onChange }) {
 
 /* ---------- RACER-PROFILES TAB — roster list, tap a racer to open their page ---------- */
 
-function RaceWinTab({ race, cur, rows, raceCode, hostRacerId, onOpenRacer, onLeave, onReplayTutorial, onOpenSound, say }) {
+function RaceWinTab({ race, cur, rows, raceCode, hostRacerId, onOpenRacer, onLeave, onReplayTutorial, onOpenSound, onOpenVote, say }) {
   const named = rows.filter((r) => (r.name || "").trim());
   return html`
     <div class="tab-panel">
@@ -2334,6 +2329,8 @@ function RaceWinTab({ race, cur, rows, raceCode, hostRacerId, onOpenRacer, onLea
             <button class="btn btn--sm racecard__btn" onClick=${onReplayTutorial}>Watch tutorial</button>
             <button class="btn btn--sm racecard__btn" onClick=${onOpenSound}>Sound & music</button>
           </div>
+          <button class="btn btn--sm btn--ghost" style="width:100%;margin-bottom:8px" onClick=${onOpenVote}>
+            🗳 Vote to end race & reset</button>
           <button class="btn btn--sm btn--danger-outline" style="width:100%" onClick=${onLeave}>Leave this race</button>
           <a href="https://kyahdj.github.io/moneymarathonapp/privacy-policy.html" target="_blank" rel="noopener"
             class="racecard__privacy">Privacy Policy</a>
@@ -2822,18 +2819,25 @@ function CongratsModal({ rank, onDismiss }) {
    (App only renders it while race.raceResolved is falsy) until the host
    taps one of the two resolve buttons. Non-hosts can cast a vote so the
    host can see what people want, but only the host's tap is binding. */
-function FinalRaceModal({ rows, isAdmin, myRacerId, onVote, onResolve }) {
+function FinalRaceModal({ rows, isAdmin, myRacerId, onVote, onResolve, onClose, isEarly }) {
   const winner = rows.find((r) => r.rank === 1);
   const resumeVotes = rows.filter((r) => r.finalVote === "resume").length;
   const resetVotes = rows.filter((r) => r.finalVote === "reset").length;
   const myVote = rows.find((r) => r.id === myRacerId)?.finalVote || "";
 
   return html`
-    <div class="modal-overlay">
-      <div class="modal" style="text-align:center;max-width:360px">
+    <div class="modal-overlay" onClick=${(e) => { if (onClose && e.target === e.currentTarget) onClose(); }}>
+      <div class="modal" style="text-align:center;max-width:360px;position:relative">
+        ${onClose && html`<button class="backbtn" style="position:absolute;top:10px;right:10px;padding:6px 10px"
+          onClick=${onClose} aria-label="Close">✕</button>`}
         <div style="font-size:40px">🏁</div>
-        <h3>The race is over!</h3>
-        <p class="modal__msg">Everyone's hit their goal${winner ? html` — congrats to ${html`<b>${winner.name}</b>`} for finishing first!` : "!"}</p>
+        ${isEarly
+          ? html`
+            <h3>Vote to end this race?</h3>
+            <p class="modal__msg">Not everyone's reached their goal yet. Racers can vote to wipe the log clean and start over, or just keep going as-is.</p>`
+          : html`
+            <h3>The race is over!</h3>
+            <p class="modal__msg">Everyone's hit their goal${winner ? html` — congrats to ${html`<b>${winner.name}</b>`} for finishing first!` : "!"}</p>`}
 
         <p class="goalcard__hint" style="margin-top:16px">Cast your vote — the host still makes the final call</p>
         <div class="modal__actions">
