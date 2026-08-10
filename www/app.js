@@ -316,6 +316,13 @@ async function ensureAdMobInit() {
   return AM;
 }
 
+/* showBanner() actually creates/loads the native banner view — calling it
+   repeatedly to "keep it aggressive" tears the view down and rebuilds it
+   every time, which is what was making it flicker out instead of staying
+   up. resumeBanner() is the plugin's own API for "make sure it's visible
+   again" on an already-created banner, so that's what reassertion uses. */
+let bannerActive = false;
+
 async function showAdBanner() {
   const AM = await ensureAdMobInit();
   if (!AM) return;
@@ -323,11 +330,18 @@ async function showAdBanner() {
     await AM.showBanner({
       adId: ADMOB_BANNER_ID, adSize: "ADAPTIVE_BANNER", position: "BOTTOM_CENTER", isTesting: ADMOB_TESTING,
     });
+    bannerActive = true;
   } catch {}
+}
+async function resumeAdBanner() {
+  const AM = window.Capacitor?.Plugins?.AdMob;
+  if (!AM || !bannerActive) return;
+  try { await AM.resumeBanner(); } catch {}
 }
 async function hideAdBanner() {
   const AM = window.Capacitor?.Plugins?.AdMob;
   if (!AM) return;
+  bannerActive = false;
   try { await AM.hideBanner(); } catch {}
 }
 
@@ -338,29 +352,46 @@ async function hideAdBanner() {
    as many times as the app is backgrounded and reopened. A resume only
    ever fires coming BACK from background though, never on a cold start,
    so this never interrupts someone's very first open. */
+/* showing ANY full-screen ad (this interstitial, or the rewarded one below)
+   is itself an Android activity transition — it fires a "pause" then a
+   "resume" on the app's own activity, exactly like backgrounding it. Left
+   unguarded, closing one app-open ad re-triggers the resume listener,
+   which can roll and show ANOTHER one — the "keeps repeating" bug. This
+   flag makes the resume handler ignore resumes caused by our own ad. */
+let showingFullScreenAd = false;
+
 async function maybeShowAppOpenAd() {
+  if (showingFullScreenAd) return;
   if (Math.random() >= 0.5) return;
   const AM = await ensureAdMobInit();
   if (!AM) return;
+  showingFullScreenAd = true;
   try {
     await AM.prepareInterstitial({ adId: ADMOB_INTERSTITIAL_ID, isTesting: ADMOB_TESTING });
     await AM.showInterstitial();
   } catch {}
+  /* the dismissal's own resume event can land shortly after showInterstitial
+     resolves, not exactly on it — a short grace window swallows that too */
+  setTimeout(() => { showingFullScreenAd = false; }, 2000);
 }
 
 /* used to gate adding a new character — resolves true once the reward is
    actually granted. No AdMob plugin present (browser testing) never blocks
    the feature, it just skips straight to "rewarded" so dev/testing isn't
-   stuck behind a native-only ad. */
+   stuck behind a native-only ad. Also raises the same guard as the app-open
+   ad above, so finishing a rewarded ad can't spuriously trigger THAT one too. */
 async function showRewardedAd() {
   const AM = await ensureAdMobInit();
   if (!AM) return true;
+  showingFullScreenAd = true;
   try {
     await AM.prepareRewardVideoAd({ adId: ADMOB_REWARDED_ID, isTesting: ADMOB_TESTING });
     const result = await AM.showRewardVideoAd();
     return !!result;
   } catch {
     return false;
+  } finally {
+    setTimeout(() => { showingFullScreenAd = false; }, 2000);
   }
 }
 
@@ -863,10 +894,10 @@ function App() {
       resumeMusicFromBackground();
       maybeShowAppOpenAd();
       /* the banner must survive a background/foreground cycle too — if we
-         left on a screen that strictly requires it, force it back the
-         moment the app is visible again instead of trusting it stayed up */
+         left on a screen that strictly requires it, resume it the moment
+         the app is visible again instead of trusting it stayed up */
       const onProfile = tabRef.current === "racewin" && !!detailRef.current;
-      if (tabRef.current === "dashboard" || onProfile) showAdBanner();
+      if (tabRef.current === "dashboard" || onProfile) resumeAdBanner();
     })).then((h) => { resumeHandle = h; });
     return () => { pauseHandle?.remove(); resumeHandle?.remove(); };
   }, []);
@@ -883,7 +914,7 @@ function App() {
     const onProfile = tab === "racewin" && !!detailRacerId;
     if (tab !== "dashboard" && !onProfile) { hideAdBanner(); return; }
     showAdBanner();
-    const retry = setInterval(showAdBanner, 30000);
+    const retry = setInterval(resumeAdBanner, 30000);
     return () => clearInterval(retry);
   }, [tab, detailRacerId]);
 
@@ -1426,6 +1457,21 @@ function App() {
   const acceptScheduleSync = () => applySavingsPlan(myRacer, race.targetDate || "", race.cadence || "every:1");
   const declineScheduleSync = () => patchRacer(myRacer.id, { scheduleAckVersion: Number(race.scheduleVersion) || 0 });
 
+  /* every "forced" popup competes for the same spot — only ever show one
+     at a time, in this priority order, instead of letting several stack on
+     top of each other. Congrats (you just won) always wins first; the rest
+     just wait their turn and reappear the moment the one ahead of them is
+     dismissed. Sound settings is excluded on purpose — it's opened by an
+     explicit tap, not a forced interruption, so it can coexist. */
+  const activeModal = congrats ? "congrats"
+    : showFinalModal ? "final"
+    : pendingScheduleSync ? "scheduleSync"
+    : showSyncModal ? "backOnline"
+    : tutorial.phase === "welcome" ? "tutorialWelcome"
+    : tutorial.phase === "touring" ? "tutorialTouring"
+    : tutorial.phase === "celebrating" ? "tutorialCelebrating"
+    : null;
+
   /* ---------- screens ---------- */
 
   if (!configured) return html`<${SetupGate} />`;
@@ -1520,18 +1566,19 @@ function App() {
 
       ${toast && html`<div class=${"toast " + (toast.bad ? "toast--bad" : "")}>${toast.msg}</div>`}
 
-      ${tutorial.phase === "welcome" && html`<${TutorialWelcome} onStart=${startTour} onSkip=${skipWelcome} />`}
-      ${tutorial.phase === "touring" && html`<${TutorialOverlay}
+      ${showSound && html`<${SoundSettingsModal} onClose=${() => setShowSound(false)} />`}
+
+      ${activeModal === "tutorialWelcome" && html`<${TutorialWelcome} onStart=${startTour} onSkip=${skipWelcome} />`}
+      ${activeModal === "tutorialTouring" && html`<${TutorialOverlay}
         step=${TUTORIAL_STEPS[tutorial.step]} index=${tutorial.step} total=${TUTORIAL_STEPS.length} tab=${tab}
         onNext=${nextTutorialStep} onBack=${backTutorialStep} onSkip=${skipTour} />`}
-      ${tutorial.phase === "celebrating" && html`<${TutorialCelebration} onDismiss=${finishCelebration} />`}
-      ${showSound && html`<${SoundSettingsModal} onClose=${() => setShowSound(false)} />`}
-      ${congrats && html`<${CongratsModal} rank=${congrats.rank} onDismiss=${() => setCongrats(null)} />`}
-      ${showFinalModal && html`<${FinalRaceModal} rows=${namedRows} isAdmin=${isAdmin}
+      ${activeModal === "tutorialCelebrating" && html`<${TutorialCelebration} onDismiss=${finishCelebration} />`}
+      ${activeModal === "congrats" && html`<${CongratsModal} rank=${congrats.rank} onDismiss=${() => setCongrats(null)} />`}
+      ${activeModal === "final" && html`<${FinalRaceModal} rows=${namedRows} isAdmin=${isAdmin}
         myRacerId=${myRacerId} onVote=${voteFinal} onResolve=${resolveFinalRace} />`}
-      ${!showFinalModal && pendingScheduleSync && html`<${ScheduleSyncModal} race=${race}
+      ${activeModal === "scheduleSync" && html`<${ScheduleSyncModal} race=${race}
         onAccept=${acceptScheduleSync} onDecline=${declineScheduleSync} />`}
-      ${showSyncModal && html`
+      ${activeModal === "backOnline" && html`
         <div class="modal-overlay" onClick=${(e) => { if (e.target === e.currentTarget) setShowSyncModal(false); }}>
           <div class="modal" style="text-align:center;max-width:320px">
             <div style="font-size:36px">⟳</div>
@@ -2326,13 +2373,13 @@ function DonutChart({ pct, size = 176 }) {
     <svg width=${size} height=${size} viewBox=${`0 0 ${size} ${size}`} role="img"
       aria-label=${`${Math.round(pct * 100)}% saved`}>
       <circle cx=${size / 2} cy=${size / 2} r=${r} fill="none" stroke="var(--red)" stroke-opacity="0.32" stroke-width=${stroke} />
-      <circle cx=${size / 2} cy=${size / 2} r=${r} fill="none" stroke="var(--lane-ink, var(--teal))"
+      <circle cx=${size / 2} cy=${size / 2} r=${r} fill="none" stroke="var(--lane-fill, var(--teal))"
         stroke-width=${stroke} stroke-linecap="round"
         stroke-dasharray=${`${saved} ${c - saved}`}
         transform=${`rotate(-90 ${size / 2} ${size / 2})`}
         style="transition:stroke-dasharray 0.7s cubic-bezier(0.22,0.9,0.28,1)" />
       <text x=${size / 2} y=${size / 2} text-anchor="middle" dominant-baseline="central"
-        font-family="'DM Mono', monospace" font-size="30" font-weight="600" fill="var(--lane-ink, var(--ink))">
+        font-family="'DM Mono', monospace" font-size="30" font-weight="600" fill="var(--lane-fill, var(--ink))">
         ${Math.round(pct * 100)}%
       </text>
     </svg>`;
@@ -2455,7 +2502,31 @@ async function downloadSavingsPdf(r, race, cur, entries) {
     y += 7;
   });
 
-  doc.save(`${r.name || "racer"}-savings-summary.pdf`);
+  const filename = `${(r.name || "racer").replace(/[^a-z0-9-_ ]/gi, "")}-savings-summary.pdf`;
+
+  /* a Capacitor Android WebView doesn't hand blob/`download` links off to
+     the OS the way a real browser tab does — doc.save() would silently do
+     nothing there. Filesystem.writeFile actually puts the bytes on disk,
+     then a local notification stands in for the "download complete" toast
+     a real browser would show, since there's no native DownloadManager
+     hook wired up here. Plain browser testing has no Filesystem plugin —
+     doc.save()'s normal blob download still works fine there. */
+  const FS = window.Capacitor?.Plugins?.Filesystem;
+  if (!FS) { doc.save(filename); return; }
+
+  try {
+    const perm = await FS.checkPermissions().catch(() => null);
+    if (perm && perm.publicStorage !== "granted") {
+      const req = await FS.requestPermissions().catch(() => null);
+      if (req && req.publicStorage !== "granted") { doc.save(filename); return; }
+    }
+    const dataUri = doc.output("datauristring");
+    const base64 = dataUri.split(",")[1];
+    await FS.writeFile({ path: filename, data: base64, directory: "DOCUMENTS" });
+    await notifyNow("PDF saved", `${filename} saved to your Documents folder.`);
+  } catch {
+    doc.save(filename);
+  }
 }
 
 function RacerDetailPage({ r, race, cur, isOwner, isAdmin, isHost, onBack, onAddEntry, onToggleEntry, onRemoveEntry, onEditAmount, onApplyPlan, onClearLog, onSetGoal, onSetEditAccess, onSetDashboardAccess, onTransferAdmin, say }) {
