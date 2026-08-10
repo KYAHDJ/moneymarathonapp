@@ -295,13 +295,22 @@ const ADMOB_INTERSTITIAL_ID = "ca-app-pub-9372606273046322/5534581013";
 const ADMOB_REWARDED_ID = "ca-app-pub-9372606273046322/3033520698";
 const ADMOB_TESTING = false;
 
-let admobInitialized = false;
-async function ensureAdMobInit() {
+/* a real race condition lived here before: setting a boolean flag BEFORE
+   awaiting initialize() meant a second caller landing in the same tick
+   (the warm-up effect and the banner effect both fire on mount) would see
+   "already initialized" and immediately call showBanner()/etc while the
+   FIRST initialize() call was still in flight — the SDK wasn't actually
+   ready yet, so that early request just silently went nowhere. Storing
+   the promise itself means every caller, no matter how many pile up
+   before it resolves, waits on the exact same one. */
+let admobInitPromise = null;
+function ensureAdMobInit() {
   const AM = window.Capacitor?.Plugins?.AdMob;
-  if (!AM || admobInitialized) return AM;
-  admobInitialized = true;
-  try { await AM.initialize({ initializeForTesting: ADMOB_TESTING }); } catch {}
-  return AM;
+  if (!AM) return Promise.resolve(null);
+  if (!admobInitPromise) {
+    admobInitPromise = AM.initialize({ initializeForTesting: ADMOB_TESTING }).catch(() => {}).then(() => AM);
+  }
+  return admobInitPromise;
 }
 
 /* showBanner() actually creates/loads the native banner view — calling it
@@ -2329,8 +2338,9 @@ function RaceWinTab({ race, cur, rows, raceCode, hostRacerId, onOpenRacer, onLea
             <button class="btn btn--sm racecard__btn" onClick=${onReplayTutorial}>Watch tutorial</button>
             <button class="btn btn--sm racecard__btn" onClick=${onOpenSound}>Sound & music</button>
           </div>
-          <button class="btn btn--sm btn--ghost" style="width:100%;margin-bottom:8px" onClick=${onOpenVote}>
-            🗳 Vote to end race & reset</button>
+          ${race.raceResolved === true && html`
+            <button class="btn btn--sm btn--ghost" style="width:100%;margin-bottom:8px" onClick=${onOpenVote}>
+              🗳 Vote to end race & reset</button>`}
           <button class="btn btn--sm btn--danger-outline" style="width:100%" onClick=${onLeave}>Leave this race</button>
           <a href="https://kyahdj.github.io/moneymarathonapp/privacy-policy.html" target="_blank" rel="noopener"
             class="racecard__privacy">Privacy Policy</a>
@@ -2566,7 +2576,8 @@ function RacerDetailPage({ r, race, cur, isOwner, isAdmin, isHost, onBack, onAdd
     <div class=${`tab-panel lane--${laneClass(r)}`} style=${laneStyle(r)}>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;gap:8px">
         <button class="btn btn--sm btn--ghost" onClick=${onBack}>← Back to racers</button>
-        <button class="btn btn--sm btn--ghost" disabled=${exporting} onClick=${exportSummary}>
+        <button class="btn btn--sm btn--ghost" disabled=${exporting || entries.length === 0} onClick=${exportSummary}
+          title=${entries.length === 0 ? "Nothing logged yet — nothing to export" : ""}>
           ${exporting ? "Building PDF…" : "⤴ Export as PDF"}</button>
       </div>
 
