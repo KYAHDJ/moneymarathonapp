@@ -1114,11 +1114,16 @@ function App() {
 
   /* the host watches the ack sets — the moment every racer has saved every
      library photo, the online copies in Storage are deleted for good. This
-     needs racers state fresh, so it re-checks on every racer snapshot. */
+     needs racers state fresh, so it re-checks on every racer snapshot. The
+     host id is derived inside the effect (not in the dependency array) —
+     hostRacerId is declared later in this component, and a dep on it here
+     would be read before initialization and crash the whole first render. */
   useEffect(() => {
     if (!race || race === "missing") return;
     const myRacerId = localStorage.getItem(lsRacer(raceId));
-    if (hostRacerId && myRacerId !== hostRacerId) return;
+    const host = race.hostRacerId
+      || [...racers].sort((a, b) => (a.order || 0) - (b.order || 0))[0]?.id;
+    if (host && myRacerId !== host) return;
     const chars = (race.characters || []).filter((c) => c && !c.imagesDeleted);
     const ready = chars.filter((c) => {
       const poses = ["start", "moving", "finish"].filter((k) => isRemoteUrl(c[k]));
@@ -1140,7 +1145,7 @@ function App() {
         await guard(updateDoc(raceRef(raceId), { characters: updated }));
       }
     })();
-  }, [race, racers, hostRacerId]);
+  }, [race, racers, raceId]);
 
   /* keep this device's savings-day reminders in lockstep with its own
      racer's plan — re-derive a signature so this only re-syncs when the
