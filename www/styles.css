@@ -1427,7 +1427,7 @@ body:has(.modal-overlay) { overflow: hidden; }
 .gate {
   max-width: 620px;
   margin: 0 auto;
-  padding: 56px 20px;
+  padding: 56px 20px 140px;
   text-align: center;
 }
 

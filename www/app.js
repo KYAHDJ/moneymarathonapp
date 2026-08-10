@@ -15,10 +15,10 @@ import {
 import {
   initializeFirestore, persistentLocalCache, persistentSingleTabManager,
   doc, collection, query, orderBy, onSnapshot, enableNetwork,
-  setDoc, updateDoc, deleteDoc, getDoc, getDocs, serverTimestamp, increment,
+  setDoc, updateDoc, deleteDoc, getDoc, getDocs, serverTimestamp, increment, arrayUnion,
 } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js";
 import {
-  getStorage, ref as storageRef, uploadBytes, getDownloadURL,
+  getStorage, ref as storageRef, uploadBytes, getDownloadURL, deleteObject,
 } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-storage.js";
 
 import { firebaseConfig } from "./firebase-config.js";
@@ -313,16 +313,25 @@ function ensureAdMobInit() {
   return admobInitPromise;
 }
 
-/* showBanner() actually creates/loads the native banner view — calling it
-   repeatedly to "keep it aggressive" tears the view down and rebuilds it
-   every time, which is what was making it flicker out instead of staying
-   up. resumeBanner() is the plugin's own API for "make sure it's visible
-   again" on an already-created banner, so that's what reassertion uses. */
+/* Aggressive banner: showBanner() creates/loads a fresh native banner view
+   every call, so the instant a fill lands we immediately schedule the NEXT
+   fresh load — a new creative appears as soon as one is generated, then it
+   keeps rotating as long as the slot is supposed to be up. bannerWanted gates
+   every path (timers, listeners) so a stopped banner can't come back on its
+   own; resumeBanner() keeps an already-created banner visible between loads
+   without the teardown/rebuild flicker. */
+const BANNER_ROTATION_MS = 30000;
+const BANNER_RETRY_MS = 15000;
 let bannerActive = false;
+let bannerWanted = false;
+let bannerTimers = new Set();
+let bannerListeners = [];
+
+function clearBannerTimers() { bannerTimers.forEach(clearTimeout); bannerTimers.clear(); }
 
 async function showAdBanner() {
   const AM = await ensureAdMobInit();
-  if (!AM) return;
+  if (!AM || !bannerWanted) return;
   try {
     await AM.showBanner({
       adId: ADMOB_BANNER_ID, adSize: "ADAPTIVE_BANNER", position: "BOTTOM_CENTER", isTesting: ADMOB_TESTING,
@@ -332,14 +341,41 @@ async function showAdBanner() {
 }
 async function resumeAdBanner() {
   const AM = window.Capacitor?.Plugins?.AdMob;
-  if (!AM || !bannerActive) return;
+  if (!AM || !bannerActive || !bannerWanted) return;
   try { await AM.resumeBanner(); } catch {}
 }
-async function hideAdBanner() {
+
+/* arm the rotation once: the moment a banner fills, schedule the next fresh
+   load; a failed fill retries fast instead of leaving the slot empty. */
+function armBannerRotation() {
   const AM = window.Capacitor?.Plugins?.AdMob;
-  if (!AM) return;
-  bannerActive = false;
-  try { await AM.hideBanner(); } catch {}
+  if (!AM || bannerListeners.length) return;
+  const loadNext = () => {
+    if (!bannerWanted) return;
+    clearBannerTimers();
+    const t = setTimeout(() => { if (bannerWanted) showAdBanner(); }, BANNER_ROTATION_MS);
+    bannerTimers.add(t);
+  };
+  const retrySoon = () => {
+    if (!bannerWanted) return;
+    clearBannerTimers();
+    const t = setTimeout(() => { if (bannerWanted) showAdBanner(); }, BANNER_RETRY_MS);
+    bannerTimers.add(t);
+  };
+  const onLoaded = () => { if (bannerWanted) { resumeAdBanner(); loadNext(); } };
+  const onOpened = () => { if (bannerWanted) resumeAdBanner(); };
+  const onClosed = () => { if (bannerWanted) showAdBanner(); };
+  const events = [
+    ["bannerAdLoaded", onLoaded],
+    ["bannerAdFailedToLoad", retrySoon],
+    ["bannerAdOpened", onOpened],
+    ["bannerAdClosed", onClosed],
+  ];
+  events.forEach(([evt, fn]) => {
+    Promise.resolve(AM.addListener(evt, fn))
+      .then((h) => { if (h?.remove) bannerListeners.push(h); })
+      .catch(() => {});
+  });
 }
 
 /* the "app open" slot — this plugin doesn't wrap AdMob's dedicated App
@@ -891,11 +927,9 @@ function App() {
     Promise.resolve(CapApp.addListener("resume", () => {
       resumeMusicFromBackground();
       maybeShowAppOpenAd();
-      /* the banner must survive a background/foreground cycle too — if we
-         left on a screen that strictly requires it, resume it the moment
-         the app is visible again instead of trusting it stayed up */
-      const onProfile = tabRef.current === "racewin" && !!detailRef.current;
-      if (tabRef.current === "dashboard" || onProfile) resumeAdBanner();
+      /* the banner must survive a background/foreground cycle too — the
+         moment the app is visible again, put it right back up */
+      resumeAdBanner();
     })).then((h) => { resumeHandle = h; });
     return () => { pauseHandle?.remove(); resumeHandle?.remove(); };
   }, []);
@@ -903,18 +937,21 @@ function App() {
   /* warm up the ads SDK once, in the background — doesn't show anything yet */
   useEffect(() => { ensureAdMobInit(); }, []);
 
-  /* the racer's own profile page (where the log lives) and the Dashboard
-     are the two screens that must show the banner strictly always, no
-     matter what — never the Race Tracker or gate screens. Re-asserting
-     showAdBanner() (not just once on the tab change) means a failed/expired
-     fill gets retried rather than silently leaving the slot blank. */
+  /* the banner is strictly always up, everywhere — no screen hides it. It's
+     shown the instant this mounts, and the rotation armed once, so the moment
+     a fresh fill is generated it's put on screen immediately and keeps
+     rotating instead of leaving the slot blank. */
   useEffect(() => {
-    const onProfile = tab === "racewin" && !!detailRacerId;
-    if (tab !== "dashboard" && !onProfile) { hideAdBanner(); return; }
+    bannerWanted = true;
+    armBannerRotation();
     showAdBanner();
-    const retry = setInterval(resumeAdBanner, 30000);
-    return () => clearInterval(retry);
-  }, [tab, detailRacerId]);
+    const safety = setInterval(() => {
+      if (!bannerWanted) return;
+      resumeAdBanner();
+      if (!bannerActive) showAdBanner();
+    }, 30000);
+    return () => { clearInterval(safety); };
+  }, []);
 
   /* sign in anonymously so the security rules have something to check */
   useEffect(() => {
@@ -1020,6 +1057,90 @@ function App() {
       setShowSyncModal(true);
     }
   }, [reallyOnline]);
+
+  /* character photos: every device in the race downloads each library image
+     once and saves it locally, then every render reads from disk instead of
+     the network. Runs on a characters signature (not the race object — that
+     changes on every heartbeat/snapshot) so it only fires when the library
+     actually changes. Once every photo is saved on this device it writes its
+     racer id into the character's acked set; when EVERY racer has acked, the
+     host deletes the online copies from Storage — nobody needs them anymore. */
+  const charactersSignature = useMemo(() =>
+    race && race !== "missing"
+      ? JSON.stringify((race.characters || []).map((c) => [c.id, c.start, c.moving, c.finish]))
+      : "",
+  [race]);
+
+  useEffect(() => {
+    if (!race || race === "missing") return;
+    const chars = race.characters || [];
+    const remoteCharIds = [];
+    chars.forEach((c) => {
+      if (["start", "moving", "finish"].some((k) => isRemoteUrl(c[k]))) remoteCharIds.push(c.id);
+    });
+    if (!remoteCharIds.length) return;
+    const myRacerId = localStorage.getItem(lsRacer(raceId));
+    let cancelled = false;
+
+    (async () => {
+      /* download every pose to this device, one by one */
+      for (const url of remoteCharIds.flatMap((id) => {
+        const c = chars.find((x) => x.id === id);
+        return ["start", "moving", "finish"].map((k) => c[k]).filter(isRemoteUrl);
+      })) {
+        if (cancelled) return;
+        await ensureImageLocal(url);
+      }
+      if (cancelled || !myRacerId) return;
+      /* everything's saved on this device — record that on our racer doc so
+         the host can tell when the whole race has their own copies */
+      const done = await Promise.all(remoteCharIds.map(async (id) => {
+        const c = chars.find((x) => x.id === id);
+        const poses = ["start", "moving", "finish"].filter((k) => isRemoteUrl(c[k]));
+        const saved = await Promise.all(poses.map((k) => ensureImageLocal(c[k])));
+        return saved.every(Boolean) ? id : null;
+      }));
+      const toAck = done.filter(Boolean);
+      if (!toAck.length) return;
+      const mine = racers.find((r) => r.id === myRacerId);
+      if (!mine) return;
+      const alreadyAcked = (mine.ackedCharacters || []).filter((id) => toAck.includes(id));
+      if (alreadyAcked.length === toAck.length) return;
+      guard(updateDoc(racerRef(raceId, myRacerId), { ackedCharacters: arrayUnion(...toAck) }));
+    })();
+
+    return () => { cancelled = true; };
+  }, [charactersSignature, racers, raceId]);
+
+  /* the host watches the ack sets — the moment every racer has saved every
+     library photo, the online copies in Storage are deleted for good. This
+     needs racers state fresh, so it re-checks on every racer snapshot. */
+  useEffect(() => {
+    if (!race || race === "missing") return;
+    const myRacerId = localStorage.getItem(lsRacer(raceId));
+    if (hostRacerId && myRacerId !== hostRacerId) return;
+    const chars = (race.characters || []).filter((c) => c && !c.imagesDeleted);
+    const ready = chars.filter((c) => {
+      const poses = ["start", "moving", "finish"].filter((k) => isRemoteUrl(c[k]));
+      if (!poses.length) return false;
+      return racers.length > 0 && racers.every((r) => (r.ackedCharacters || []).includes(c.id));
+    });
+    if (!ready.length) return;
+
+    (async () => {
+      for (const c of ready) {
+        for (const k of ["start", "moving", "finish"]) {
+          if (!isRemoteUrl(c[k])) continue;
+          try {
+            /* a Storage download URL round-trips straight back into a ref */
+            await deleteObject(storageRef(storage, c[k]));
+          } catch {}
+        }
+        const updated = (race.characters || []).map((x) => x.id === c.id ? { ...x, imagesDeleted: true } : x);
+        await guard(updateDoc(raceRef(raceId), { characters: updated }));
+      }
+    })();
+  }, [race, racers, hostRacerId]);
 
   /* keep this device's savings-day reminders in lockstep with its own
      racer's plan — re-derive a signature so this only re-syncs when the
@@ -1612,44 +1733,111 @@ function TabNav({ onChange }) {
     </nav>`;
 }
 
-/* character pose photos are the one thing worth costing data every single
-   render — cache them once via the Cache Storage API (works without a
-   service worker) so re-opening the app, or losing signal mid-race, still
-   shows every racer's sprite from disk instead of a broken image icon.
-   no-cors keeps this working for imgur/Storage URLs that don't send CORS
-   headers back to a plain fetch() — the response is opaque but still
-   perfectly usable as an <img> source once it's a blob: URL. */
-const IMG_CACHE_NAME = "mm-images-v1";
+/* Every character photo is saved to this device ONCE (IndexedDB), then loaded
+   from disk forever after — the online copy is only ever used to grab it that
+   first time. That's what keeps racer sprites on the track from showing a
+   broken icon when the signal drops, and it's what lets the host clean the
+   online images out of Storage once every device in the race has its own copy.
+   IndexedDB (not the Cache Storage API) because opaque no-cors blobs read back
+   from the Cache API were the "image never loads" bug on some WebViews — a
+   CORS fetch from Storage works reliably (Storage sends the CORS headers),
+   with a no-cors fallback for pasted imgur-style links. */
+const IMG_DB_NAME = "mm-images-v2";
+const IMG_DB_STORE = "photos";
+let imgDbPromise = null;
 
+function openImgDb() {
+  if (imgDbPromise) return imgDbPromise;
+  if (!("indexedDB" in window)) return Promise.resolve(null);
+  imgDbPromise = new Promise((resolve) => {
+    const req = indexedDB.open(IMG_DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(IMG_DB_STORE)) db.createObjectStore(IMG_DB_STORE);
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => resolve(null);
+  });
+  return imgDbPromise;
+}
+
+const imgDbGet = (url) => openImgDb().then((db) => new Promise((resolve) => {
+  if (!db) return resolve(null);
+  const tx = db.transaction(IMG_DB_STORE, "readonly");
+  const rq = tx.objectStore(IMG_DB_STORE).get(url);
+  rq.onsuccess = () => resolve(rq.result || null);
+  rq.onerror = () => resolve(null);
+}));
+
+const imgDbPut = (url, blob) => openImgDb().then((db) => new Promise((resolve) => {
+  if (!db) return resolve(false);
+  const tx = db.transaction(IMG_DB_STORE, "readwrite");
+  tx.objectStore(IMG_DB_STORE).put(blob, url);
+  tx.oncomplete = () => resolve(true);
+  tx.onerror = () => resolve(false);
+}));
+
+/* local paths (./characters/...) are already on disk — only real http(s)
+   Storage/imgur links need downloading to this device */
+const isRemoteUrl = (url) =>
+  !!url && /^https?:\/\//i.test(url) && !/^https?:\/\/(localhost|127\.0\.0\.1)/i.test(url);
+
+/* download a remote photo to this device's own IndexedDB — resolves with true
+   once it's saved locally (or was already), false if it couldn't be fetched */
+async function ensureImageLocal(url) {
+  if (!isRemoteUrl(url)) return true;
+  if (await imgDbGet(url)) return true;
+  if (!navigator.onLine) return false;
+  try {
+    let res = await fetch(url);
+    if (!res.ok) res = await fetch(url, { mode: "no-cors" }).catch(() => null);
+    if (!res) return false;
+    const blob = await res.blob();
+    if (blob && blob.size > 0) return await imgDbPut(url, blob);
+  } catch {}
+  return false;
+}
+
+/* the one component that ever touches a character photo's src. Saved images
+   come straight from disk (blob: URL); anything not yet saved shows the live
+   URL so nothing ever looks missing while the background saver is pulling it.
+   If the online copy is gone (deleted after the race saved it locally) and
+   this device never grabbed it, the img silently hides so the avatar's own
+   colour fill shows instead of a broken icon. */
 function CachedImage({ src, alt = "" }) {
-  const [resolvedSrc, setResolvedSrc] = useState(src);
+  const [resolvedSrc, setResolvedSrc] = useState(null);
+  const objectUrlRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
-    let objectUrl = null;
-    setResolvedSrc(src);
-    if (!src || !window.caches) return;
+    if (objectUrlRef.current) { URL.revokeObjectURL(objectUrlRef.current); objectUrlRef.current = null; }
+    if (!src) { setResolvedSrc(null); return; }
+    if (!isRemoteUrl(src)) { setResolvedSrc(src); return; }
 
+    setResolvedSrc(src);
     (async () => {
-      try {
-        const cache = await caches.open(IMG_CACHE_NAME);
-        const cached = await cache.match(src);
-        if (cached) {
-          const blob = await cached.blob();
-          if (cancelled) return;
-          objectUrl = URL.createObjectURL(blob);
-          setResolvedSrc(objectUrl);
-        } else if (navigator.onLine) {
-          const res = await fetch(src, { mode: "no-cors" }).catch(() => null);
-          if (res && !cancelled) await cache.put(src, res).catch(() => {});
-        }
-      } catch {}
+      const blob = await imgDbGet(src);
+      if (cancelled || !blob) return;
+      const objectUrl = URL.createObjectURL(blob);
+      objectUrlRef.current = objectUrl;
+      setResolvedSrc(objectUrl);
     })();
 
-    return () => { cancelled = true; if (objectUrl) URL.revokeObjectURL(objectUrl); };
+    return () => { cancelled = true; };
   }, [src]);
 
-  return html`<img src=${resolvedSrc} alt=${alt} loading="lazy" />`;
+  if (!resolvedSrc) return html``;
+  return html`<img src=${resolvedSrc} alt=${alt} loading="lazy"
+    onError=${async () => {
+      if (objectUrlRef.current) return;
+      const blob = await imgDbGet(src).catch(() => null);
+      if (blob && !objectUrlRef.current) {
+        objectUrlRef.current = URL.createObjectURL(blob);
+        setResolvedSrc(objectUrlRef.current);
+      } else {
+        setResolvedSrc(null);
+      }
+    }} />`;
 }
 
 /* ---------- RACE TRACKER (home) — podium + track ---------- */
@@ -1884,6 +2072,10 @@ function HomeTab({ race, cur, rows, isAdmin, trueAdmin, hostRacerId, onPatchRace
         !(await askConfirm("Someone is racing as this character. Remove it anyway?"))) return;
     if (!rows.some((r) => r.characterId === id) &&
         !(await askConfirm("Remove this character from the library?"))) return;
+    const gone = characters.find((c) => c.id === id);
+    if (gone) ["start", "moving", "finish"].forEach((k) => {
+      if (isRemoteUrl(gone[k])) deleteObject(storageRef(storage, gone[k])).catch(() => {});
+    });
     onPatchRace({ characters: characters.filter((c) => c.id !== id) });
   };
 
@@ -1896,6 +2088,9 @@ function HomeTab({ race, cur, rows, isAdmin, trueAdmin, hostRacerId, onPatchRace
       const ref = storageRef(storage, path);
       await uploadBytes(ref, toSend, { contentType: toSend.type || "image/*" });
       const url = await getDownloadURL(ref);
+      /* the uploader's own device saves the exact bytes right away, so it
+         doesn't need to re-download the online copy to have it locally */
+      imgDbPut(url, toSend).catch(() => {});
       setForm((f) => ({ ...f, [field]: url }));
     } catch (err) {
       const msg = err.code === "storage/unauthorized"
@@ -1982,7 +2177,7 @@ function HomeTab({ race, cur, rows, isAdmin, trueAdmin, hostRacerId, onPatchRace
                     ${["start", "moving", "finish"].map((k) => html`
                       <div class="charcard__pose" key=${k}>
                         ${c[k]
-                          ? html`<img src=${c[k]} alt="" loading="lazy" />`
+                          ? html`<${CachedImage} src=${c[k]} alt="" />`
                           : html`<span class="charcard__pose-label">${k === "moving" ? "Running" : k[0].toUpperCase() + k.slice(1)}</span>`}
                       </div>`)}
                   </div>

@@ -52,6 +52,7 @@ service cloud.firestore {
           && (!('color' in request.resource.data) || request.resource.data.color is string)
           && (!('editAccess' in request.resource.data) || request.resource.data.editAccess is string)
           && (!('joinedSelf' in request.resource.data) || request.resource.data.joinedSelf is bool)
+          && (!('ackedCharacters' in request.resource.data) || request.resource.data.ackedCharacters is list)
           && (!('goal' in request.resource.data) || request.resource.data.goal is number)
           && (!('canEditDashboard' in request.resource.data) || request.resource.data.canEditDashboard is bool)
           && (!('targetDate' in request.resource.data) || request.resource.data.targetDate is string)
