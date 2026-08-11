@@ -34,6 +34,10 @@
   --r-lg: 20px;
   --pad: 18px;
   color-scheme: light;
+  /* the AdMob banner's real height, in px, reported by the native view via
+     bannerAdSizeChanged. The web UI reserves this much space at the bottom
+     so nothing sits hidden behind the banner. 0 until a banner reports. */
+  --banner-h: 0px;
 }
 
 /* six lane colours — Red, Orange, Yellow, Green, Blue, Violet.
@@ -75,7 +79,7 @@ input, select { font-family: inherit; }
 .shell {
   max-width: 980px;
   margin: 0 auto;
-  padding: 20px 16px 96px;
+  padding: 20px 16px calc(96px + var(--banner-h));
   transition: padding-top 0.2s ease;
 }
 .shell--offline { padding-top: 48px; }
@@ -93,6 +97,67 @@ input, select { font-family: inherit; }
   padding: 7px 12px;
   padding-top: calc(7px + env(safe-area-inset-top, 0px));
 }
+
+/* ---------- in-app update bar (Google Play In-App Updates) ----------
+   sits in the same fixed top slot as the offline bar, styled with the
+   app's teal/green palette. The page pushes itself down by the bar's
+   real height via --updatebar-h so content is never hidden behind it. */
+
+.updatebar {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 710;
+  background: var(--teal);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: 0 2px 10px rgba(29, 79, 61, 0.22);
+}
+.updatebar__inner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 9px 16px;
+  padding-top: calc(9px + env(safe-area-inset-top, 0px));
+}
+.updatebar__label { flex: 1; line-height: 1.3; }
+.updatebar__btn {
+  flex-shrink: 0;
+  background: var(--ink);
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.01em;
+  padding: 8px 18px;
+}
+.updatebar__track {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.3);
+}
+.updatebar__fill {
+  height: 100%;
+  width: 0%;
+  background: var(--gold);
+  transition: width 0.25s ease;
+}
+
+/* the page reserves room for whatever fixed strip is up top so nothing
+   scrolls underneath it — offline bar, update bar, or both at once. */
+body.has-updatebar .shell,
+body.has-updatebar .gate { padding-top: calc(20px + var(--updatebar-h, 52px)); }
+body.has-updatebar.shell--offline,
+body.has-updatebar .shell--offline { padding-top: calc(48px + var(--updatebar-h, 52px)); }
+
+/* if the update bar is up, the offline bar slides below it instead of
+   stacking on top of it */
+body.has-updatebar .offlinebar { top: var(--updatebar-h, 52px); }
 
 .section { margin-top: 30px; }
 
@@ -138,7 +203,7 @@ input, select { font-family: inherit; }
 .syncsign {
   position: fixed;
   left: 14px;
-  bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  bottom: calc(14px + env(safe-area-inset-bottom, 0px) + var(--banner-h));
   z-index: 50;
   width: 30px;
   height: 30px;
@@ -413,7 +478,7 @@ input, select { font-family: inherit; }
   position: fixed;
   left: 0;
   right: 0;
-  bottom: 0;
+  bottom: var(--banner-h);
   z-index: 50;
   display: flex;
   gap: 10px;
@@ -1427,7 +1492,7 @@ body:has(.modal-overlay) { overflow: hidden; }
 .gate {
   max-width: 620px;
   margin: 0 auto;
-  padding: 56px 20px 140px;
+  padding: 56px 20px calc(140px + var(--banner-h));
   text-align: center;
 }
 
@@ -1473,7 +1538,7 @@ body:has(.modal-overlay) { overflow: hidden; }
 .toast {
   position: fixed;
   left: 50%;
-  bottom: 22px;
+  bottom: calc(22px + var(--banner-h));
   transform: translateX(-50%);
   background: var(--ink);
   color: #fff;

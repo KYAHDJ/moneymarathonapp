@@ -428,6 +428,104 @@ async function showRewardedAd() {
   }
 }
 
+/* ============================================================
+   IN-APP UPDATE — @capawesome/capacitor-app-update, wrapped around
+   Google Play's In-App Updates API.
+
+   The native API only reports an update when the app was installed
+   from the Play Store and a newer build is live on the user's test
+   track — sideloaded/dev builds get UPDATE_NOT_AVAILABLE, so the bar
+   quietly never shows where it can't work. The bar itself is a fixed
+   themed strip at the very top of the app (same slot as the offline
+   bar), with an Update button; tapping starts Google's flexible flow
+   (background download with live progress), then a Restart button
+   finishes the install. */
+let updateBarEl = null;
+let updateReadyToRestart = false;
+
+function ensureUpdateBar() {
+  if (updateBarEl) return updateBarEl;
+  updateBarEl = document.createElement("div");
+  updateBarEl.className = "updatebar";
+  updateBarEl.hidden = true;
+  updateBarEl.innerHTML = `
+    <div class="updatebar__inner">
+      <span class="updatebar__label">A new version is available.</span>
+      <button class="updatebar__btn" type="button">Update</button>
+      <div class="updatebar__track" hidden><div class="updatebar__fill"></div></div>
+    </div>`;
+  updateBarEl.querySelector(".updatebar__btn").addEventListener("click", onUpdateTap);
+  document.body.appendChild(updateBarEl);
+  return updateBarEl;
+}
+
+function setUpdateBar(text, opts = {}) {
+  const el = ensureUpdateBar();
+  const label = el.querySelector(".updatebar__label");
+  const btn = el.querySelector(".updatebar__btn");
+  const track = el.querySelector(".updatebar__track");
+  const fill = el.querySelector(".updatebar__fill");
+  label.textContent = text;
+  btn.hidden = !(opts.button || opts.restart);
+  btn.textContent = opts.restart ? "Restart" : (opts.button || "Update");
+  updateReadyToRestart = !!opts.restart;
+  track.hidden = opts.pct == null;
+  fill.style.width = (opts.pct ?? 0) + "%";
+  el.hidden = false;
+  document.body.classList.add("has-updatebar");
+  const h = el.offsetHeight;
+  if (h) document.documentElement.style.setProperty("--updatebar-h", h + "px");
+}
+
+async function onUpdateTap() {
+  const AU = window.Capacitor?.Plugins?.AppUpdate;
+  if (!AU) return;
+  if (updateReadyToRestart) {
+    try { await AU.completeFlexibleUpdate(); } catch {}
+    return;
+  }
+  try {
+    const res = await AU.startFlexibleUpdate();
+    if (res?.code === 0) {
+      setUpdateBar("Downloading update…", { pct: 0 });
+    } else {
+      setUpdateBar("A new version is available.", { button: "Update" });
+    }
+  } catch {
+    setUpdateBar("A new version is available.", { button: "Update" });
+  }
+}
+
+async function checkForUpdate() {
+  const AU = window.Capacitor?.Plugins?.AppUpdate;
+  if (!AU) return;
+  try {
+    const info = await AU.getAppUpdateInfo();
+    const availability = info.updateAvailability; /* 2 = UPDATE_AVAILABLE, 3 = UPDATE_IN_PROGRESS */
+    if (availability !== 2 && availability !== 3) return;
+    const status = info.installStatus ?? 0;
+    if (status === 4 || status === 11) {
+      /* already downloaded (INSTALLED/DOWNLOADED) — just offer the restart */
+      setUpdateBar("Update downloaded — restart to finish.", { restart: true, pct: 100 });
+    } else {
+      setUpdateBar("A new version is available.", { button: "Update" });
+    }
+    Promise.resolve(AU.addListener("onFlexibleUpdateStateChange", (st) => {
+      const s = st.installStatus;
+      if (s === 4 || s === 11) {
+        setUpdateBar("Update downloaded — restart to finish.", { restart: true, pct: 100 });
+      } else if (s === 2) {
+        const pct = st.totalBytesToDownload ? Math.round((st.bytesDownloaded / st.totalBytesToDownload) * 100) : 0;
+        setUpdateBar(`Downloading update… ${pct}%`, { pct });
+      } else if (s === 3) {
+        setUpdateBar("Installing update…", { pct: 100 });
+      } else if (s === 5 || s === 6) {
+        setUpdateBar("A new version is available.", { button: "Update" });
+      }
+    })).catch(() => {});
+  } catch { /* not a Play install, or no update — the bar stays hidden */ }
+}
+
 /* soft 1s fade at the loop seam instead of an abrupt native loop restart */
 bgMusic.addEventListener("timeupdate", () => {
   if (!bgMusic.duration || !soundPrefs.musicOn) return;
@@ -945,6 +1043,20 @@ function App() {
     bannerWanted = true;
     armBannerRotation();
     showAdBanner();
+    /* when the native banner view reports its actual height, tell the layout
+       to reserve that much space at the bottom so the UI sits ABOVE the
+       banner instead of hiding behind it. bannerAdSizeChanged carries the
+       size in px. */
+    const onBannerSize = (size) => {
+      const h = size?.height || 0;
+      if (h > 0) document.documentElement.style.setProperty("--banner-h", h + "px");
+    };
+    const AM = window.Capacitor?.Plugins?.AdMob;
+    if (AM) {
+      Promise.resolve(AM.addListener("bannerAdSizeChanged", onBannerSize))
+        .then((h) => { if (h?.remove) bannerListeners.push(h); })
+        .catch(() => {});
+    }
     const safety = setInterval(() => {
       if (!bannerWanted) return;
       resumeAdBanner();
@@ -952,6 +1064,11 @@ function App() {
     }, 30000);
     return () => { clearInterval(safety); };
   }, []);
+
+  /* ask Google Play once whether a newer build exists and, if so, raise the
+     themed update bar — the check is cheap and the bar only ever appears
+     when a real update is live on the installed store track. */
+  useEffect(() => { checkForUpdate(); }, []);
 
   /* sign in anonymously so the security rules have something to check */
   useEffect(() => {
