@@ -15,7 +15,7 @@ import {
 import {
   initializeFirestore, persistentLocalCache, persistentSingleTabManager,
   doc, collection, query, orderBy, onSnapshot, enableNetwork,
-  setDoc, updateDoc, deleteDoc, getDoc, getDocs, serverTimestamp, increment, arrayUnion,
+  setDoc, updateDoc, deleteDoc, getDoc, getDocs, serverTimestamp, arrayUnion,
 } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js";
 import {
   getStorage, ref as storageRef, uploadBytes, getDownloadURL, deleteObject,
@@ -1555,10 +1555,23 @@ function App() {
      "yes, sync me to the new schedule" from the pending-adjustment prompt),
      they're still considered "on the shared default" and stay eligible for
      future auto-adjust prompts; only an actual divergence opts them out. */
+  const buildPlanEntries = (r, target, cadence, goalValue) => {
+    const remaining = Math.max(0, Math.round((goalValue ?? racerGoal(r, race)) - (r.saved || 0)));
+    const keep = (r.entries || []).filter((e) => !(e.source === "plan" && !e.confirmed));
+    if (target && remaining > 0) {
+      const dates = scheduleDates(target, cadence);
+      const per = dates.length ? Math.round(remaining / dates.length) : 0;
+      return [...keep, ...dates.map((d, i) => ({
+        id: newId(8),
+        amount: i === dates.length - 1 ? remaining - per * (dates.length - 1) : per,
+        date: d, confirmed: false, source: "plan",
+      }))];
+    }
+    return keep;
+  };
+
   const applySavingsPlan = (r, targetDate, cadence) => {
     touchActivity(r);
-    const remaining = Math.max(0, Math.round(racerGoal(r, race) - r.saved));
-    const keep = (r.entries || []).filter((e) => !(e.source === "plan" && !e.confirmed));
     const sharedTarget = race?.targetDate || "";
     const sharedCadence = race?.cadence || "every:1";
     const patch = {
@@ -1567,19 +1580,46 @@ function App() {
       scheduleAckVersion: Number(race?.scheduleVersion) || 0,
       expiresAt: nextExpiry(),
     };
-    if (targetDate && remaining > 0) {
-      const dates = scheduleDates(targetDate, cadence);
-      const per = dates.length ? Math.round(remaining / dates.length) : 0;
-      const planned = dates.map((d, i) => ({
-        id: newId(8),
-        amount: i === dates.length - 1 ? remaining - per * (dates.length - 1) : per,
-        date: d, confirmed: false, source: "plan",
-      }));
-      patch.entries = [...keep, ...planned];
+    if (targetDate && Math.max(0, Math.round(racerGoal(r, race) - r.saved)) > 0) {
+      patch.entries = buildPlanEntries(r, targetDate, cadence);
     } else {
-      patch.entries = keep;
+      patch.entries = (r.entries || []).filter((e) => !(e.source === "plan" && !e.confirmed));
     }
     return patchRacer(r.id, patch);
+  };
+
+  /* the three Dashboard settings — goal per person, save-by date, and
+     cadence — are SHARED: changing any of them on the Dashboard applies to
+     EVERY racer right away, not just as a default they can silently stay
+     behind on. The race doc updates, and every racer doc is rewritten too,
+     so no matter what individual value someone had before, they all move
+     together. targetDate/cadence also rebuild everyone's planned entries
+     and ack the new schedule version so the "accept the new schedule?"
+     prompt doesn't nag people who already got the change. */
+  const applySharedSettings = ({ goal, targetDate, cadence } = {}) => {
+    const newVersion = (Number(race?.scheduleVersion) || 0) + 1;
+    const racePatch = {};
+    if (goal !== undefined) racePatch.goal = Math.round(Number(goal)) || 0;
+    if (targetDate !== undefined || cadence !== undefined) racePatch.scheduleVersion = newVersion;
+    if (targetDate !== undefined) racePatch.targetDate = targetDate;
+    if (cadence !== undefined) racePatch.cadence = cadence;
+    if (Object.keys(racePatch).length) patchRace(racePatch);
+
+    const goalValue = goal !== undefined ? Math.round(Number(goal)) || 0 : null;
+    const target = targetDate !== undefined ? targetDate : race?.targetDate || "";
+    const cad = cadence !== undefined ? cadence : race?.cadence || "every:1";
+    racers.forEach((r) => {
+      const patch = { expiresAt: nextExpiry() };
+      if (goalValue !== null) patch.goal = goalValue;
+      if (targetDate !== undefined || cadence !== undefined) {
+        patch.targetDate = target;
+        patch.cadence = cad;
+        patch.scheduleCustom = false;
+        patch.scheduleAckVersion = newVersion;
+        patch.entries = buildPlanEntries(r, target, cad, goalValue);
+      }
+      patchRacer(r.id, patch);
+    });
   };
 
   /* ---------- derived ---------- */
@@ -1763,6 +1803,7 @@ function App() {
             race=${race} cur=${cur} rows=${rows} isAdmin=${canEditDashboard} trueAdmin=${isAdmin}
             hostRacerId=${hostRacerId}
             onPatchRace=${patchRace}
+            onApplyShared=${applySharedSettings}
             onPatchRacer=${patchRacer}
             onAddRacer=${addRacer}
             onRemoveRacer=${removeRacer}
@@ -2138,7 +2179,7 @@ function Lane({ r, race, cur, isHost }) {
 
 /* ---------- HOME TAB — setup, racers, characters, leave ---------- */
 
-function HomeTab({ race, cur, rows, isAdmin, trueAdmin, hostRacerId, onPatchRace, onPatchRacer, onAddRacer, onRemoveRacer, reallyOnline, say }) {
+function HomeTab({ race, cur, rows, isAdmin, trueAdmin, hostRacerId, onPatchRace, onApplyShared, onPatchRacer, onAddRacer, onRemoveRacer, reallyOnline, say }) {
   const [form, setForm] = useState({ name: "", start: "", moving: "", finish: "" });
   const [uploading, setUploading] = useState({});
   const [cropTarget, setCropTarget] = useState(null);
@@ -2252,20 +2293,20 @@ function HomeTab({ race, cur, rows, isAdmin, trueAdmin, hostRacerId, onPatchRace
               onChange=${(v) => onPatchRace({ currency: v })} />
             <${LiveInput} className="goalcard__amount"
               value=${race.goal} inputmode="numeric" aria-label="Goal per person"
-              onCommit=${(v) => onPatchRace({ goal: Math.round(Number(v)) || 0 })} />
+              onCommit=${(v) => onApplyShared({ goal: Math.round(Number(v)) || 0 })} />
           </div>
-          <p class="goalcard__hint">Anyone can set their own goal from their own profile instead</p>
+          <p class="goalcard__hint">Shared — changing this updates everyone's goal to match</p>
 
-          <p class="goalcard__label" style="margin-top:14px">Save by (default for everyone)</p>
+          <p class="goalcard__label" style="margin-top:14px">Save by (applied to everyone)</p>
           <input class="field field--mono" type="date" style="width:100%" value=${race.targetDate || ""} min=${today()}
-            aria-label="Default save-by date"
-            onChange=${(e) => onPatchRace({ targetDate: e.target.value, scheduleVersion: increment(1) })} />
-          <p class="goalcard__hint">Pre-fills everyone's savings plan — anyone can still pick their own date from their own profile</p>
+            aria-label="Shared save-by date"
+            onChange=${(e) => onApplyShared({ targetDate: e.target.value })} />
+          <p class="goalcard__hint">Applied to everyone right away — each racer's savings plan is rebuilt around it</p>
 
-          <p class="goalcard__label" style="margin-top:14px">Savings cadence (default for everyone)</p>
+          <p class="goalcard__label" style="margin-top:14px">Savings cadence (applied to everyone)</p>
           <${CadencePicker} cadence=${race.cadence || "every:1"}
-            onChange=${(v) => onPatchRace({ cadence: v, scheduleVersion: increment(1) })} />
-          <p class="goalcard__hint">Same idea — everyone starts on this schedule, anyone can still pick their own from their own profile</p>
+            onChange=${(v) => onApplyShared({ cadence: v })} />
+          <p class="goalcard__hint">Applied to everyone's savings plan immediately</p>
         </div>
       </section>
 
